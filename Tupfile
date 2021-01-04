@@ -1,5 +1,5 @@
 CXX      = g++
-LIBS     = Magick++ microdns
+LIBS     = Magick++ avahi-client libpsx
 CXXFLAGS = -pedantic -std=c++17 -Wall -Werror -g
 CPPFLAGS = `pkg-config --cflags $(LIBS)`
 LDFLAGS  = `pkg-config --libs $(LIBS)`
