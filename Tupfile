@@ -1,12 +1,12 @@
 CXX      = g++
-LIBS     = libraw_r
-CXXFLAGS = -pedantic -std=c++17 -Wall -Werror
+LIBS     = Magick++
+CXXFLAGS = -pedantic -std=c++17 -Wall -Werror -g
 CPPFLAGS = `pkg-config --cflags $(LIBS)`
 LDFLAGS  = `pkg-config --libs $(LIBS)`
 
 SRC_DIR   = src
 BUILD_DIR = build
-PROG      = EXE
+PROG      = Exposure
 
 : foreach $(SRC_DIR)/*.cpp |> $(CXX) $(CPPFLAGS) $(CXXFLAGS) -c %f -o %o |> $(BUILD_DIR)/%B.o
 : $(BUILD_DIR)/*.o |> $(CXX) %f $(LDFLAGS) -o %o |> $(PROG)
