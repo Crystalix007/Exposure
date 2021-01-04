@@ -1,5 +1,5 @@
 CXX      = g++
-LIBS     = Magick++
+LIBS     = Magick++ microdns
 CXXFLAGS = -pedantic -std=c++17 -Wall -Werror -g
 CPPFLAGS = `pkg-config --cflags $(LIBS)`
 LDFLAGS  = `pkg-config --libs $(LIBS)`
