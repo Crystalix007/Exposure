@@ -18,15 +18,21 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	Magick::InitializeMagick(*argv);
+	if (strcmp(argv[1], "--client") == 0) {
+		std::clog << "Running as client only\n";
+		Magick::InitializeMagick(*argv);
+		mdns_find_server();
+		int r = process_image(argv[1]);
+		return r;
+	}
 
 	auto mdns_service = start_mdns_service();
 
-	int r = process_image(argv[1]);
+	std::promise<void>().get_future().wait();
 
 	stop_mdns_service(std::move(mdns_service));
 
-	return r;
+	return 0;
 }
 
 int process_image(const std::string filename) {
