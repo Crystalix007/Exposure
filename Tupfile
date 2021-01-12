@@ -1,5 +1,5 @@
-CXX      = g++
-LIBS     = Magick++ avahi-client libpsx
+CXX      = clang++
+LIBS     = Magick++ avahi-client libpsx libzmqpp
 CXXFLAGS = -pedantic -std=c++17 -Wall -Werror -g
 CPPFLAGS = `pkg-config --cflags $(LIBS)`
 LDFLAGS  = `pkg-config --libs $(LIBS)`
