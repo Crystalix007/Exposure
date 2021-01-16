@@ -2,6 +2,9 @@
 #include <cassert>
 #include <utility>
 
+#include "algorithm.hpp"
+#include "protocol.hpp"
+
 ServerDetails::ServerDetails(std::string name, std::string address, std::uint16_t port)
     : name{ name }, address{ address }, port{ port } {}
 
@@ -28,7 +31,7 @@ ServerConnection::ServerConnection(const ServerDetails serverDetails)
 
 ServerConnection::ServerConnection(ServerConnection&& other)
     : serverDetails{ other.serverDetails }, pull_socket{ std::move(other.pull_socket) },
-      currentState{ other.currentState.load() } {}
+      push_socket{ std::move(other.push_socket) }, currentState{ other.currentState.load() } {}
 
 ServerConnection::~ServerConnection() {
 	this->disconnect();
@@ -41,11 +44,18 @@ void ServerConnection::connect(zmqpp::context& context) {
 	if (this->currentState != ServerConnection::State::Dying) {
 		this->currentState = transitionState(ServerConnection::State::Connected);
 		pull_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::pull);
-		const auto& endpoint = this->endpoint();
+		push_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::push);
+
+		pull_socket->set(zmqpp::socket_option::receive_high_water_mark, 1);
+		pull_socket->set(zmqpp::socket_option::conflate, true);
+
+		const auto& endpoint = this->pull_endpoint();
 		std::clog << "Worker connecting to " << endpoint << "\n";
-		pull_socket->connect(this->endpoint());
+		pull_socket->connect(this->pull_endpoint());
+		push_socket->connect(this->push_endpoint());
 
 		assert(pull_socket);
+		assert(push_socket);
 	}
 }
 
@@ -54,7 +64,8 @@ void ServerConnection::disconnect() {
 		this->currentState = transitionState(ServerConnection::State::Dying);
 		std::unique_lock<std::mutex> lock{ this->running_mutex };
 		running_condition.wait(lock);
-		pull_socket->unbind(this->endpoint());
+		pull_socket->unbind(this->pull_endpoint());
+		pull_socket->unbind(this->pull_endpoint());
 		pull_socket.reset();
 	}
 }
@@ -81,6 +92,13 @@ void ServerConnection::run() {
 		pull_socket->receive(message);
 
 		std::cout << message << std::endl;
+
+		std::optional<Histogram> histogram = image_get_histogram(message);
+
+		assert(histogram);
+
+		zmqpp::message response{};
+		response << encodeHistogramResult(message, histogram.value());
 	}
 
 	std::unique_lock<std::mutex> lock{ this->running_mutex };
@@ -111,10 +129,16 @@ ServerConnection::State ServerConnection::transitionState(ServerConnection::Stat
 	return this->currentState;
 }
 
-zmqpp::endpoint_t ServerConnection::endpoint() const {
+zmqpp::endpoint_t ServerConnection::pull_endpoint() const {
 	assert(this->connected());
 
 	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port);
+}
+
+zmqpp::endpoint_t ServerConnection::push_endpoint() const {
+	assert(this->connected());
+
+	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port + 1);
 }
 
 Worker::Worker() : connections{}, connectionsMutex{} {}

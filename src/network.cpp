@@ -125,10 +125,10 @@ void create_avahi_services(AvahiClient* c) {
 	int error = 0;
 
 	if (avahi_entry_group_is_empty(group)) {
-		if ((error = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
-		                                           AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name,
-		                                           service_name, nullptr, nullptr, SERVICE_PORT,
-		                                           nullptr))) {
+		if ((error =
+		         avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+		                                       AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name,
+		                                       service_name, nullptr, nullptr, WORK_PORT, nullptr))) {
 			std::cerr << "Failed to register Avahi service with entry group: " << avahi_strerror(error)
 			          << "\n";
 			return;

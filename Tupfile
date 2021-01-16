@@ -1,14 +1,20 @@
 CXX      = clang++
-LIBS     = Magick++ avahi-client libpsx libzmqpp
+LIBS     = Magick++ avahi-client libpsx libzmqpp capnp
 CXXFLAGS = -pedantic -std=c++17 -Wall -Werror -g
 CPPFLAGS = `pkg-config --cflags $(LIBS)`
 LDFLAGS  = `pkg-config --libs $(LIBS)`
 
 SRC_DIR   = src
+PROTO_DIR = protocols
+GEN_DIR   = generated
 BUILD_DIR = build
 PROG      = Exposure
 
-: foreach $(SRC_DIR)/*.cpp |> $(CXX) $(CPPFLAGS) $(CXXFLAGS) -c %f -o %o |> $(BUILD_DIR)/%B.o
+CXXFLAGS += -I $(GEN_DIR)
+
+: foreach $(PROTO_DIR)/*.capnp |> capnp compile -oc++:$(GEN_DIR) --src-prefix=$(PROTO_DIR) %f |> "$(GEN_DIR)/%B.capnp.c++" | "$(GEN_DIR)/%B.capnp.h"
+preload $(GEN_DIR)
+run ./proto-tup-commands.sh "$(GEN_DIR)" "$(BUILD_DIR)" "$(SRC_DIR)"
 : $(BUILD_DIR)/*.o |> $(CXX) %f $(LDFLAGS) -o %o |> $(PROG)
 
 .gitignore

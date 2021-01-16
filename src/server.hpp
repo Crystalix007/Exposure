@@ -4,6 +4,11 @@
 #include <zmqpp/socket.hpp>
 
 #include <filesystem>
+#include <map>
+#include <string>
+#include <vector>
+
+#include "algorithm.hpp"
 
 class Server {
 public:
@@ -13,4 +18,8 @@ public:
 
 protected:
 	zmqpp::socket push_socket;
+	zmqpp::socket pull_socket;
+
+	void transmit_work(const std::vector<std::string>& files);
+	std::map<std::string, Histogram> receive_work(size_t total_work_samples);
 };

@@ -48,7 +48,8 @@ public:
 
 	void run();
 
-	zmqpp::endpoint_t endpoint() const;
+	zmqpp::endpoint_t pull_endpoint() const;
+	zmqpp::endpoint_t push_endpoint() const;
 
 	std::atomic<ServerConnection::State>& state();
 	ServerConnection::State state() const;
@@ -58,6 +59,7 @@ public:
 protected:
 	ServerDetails serverDetails;
 	std::unique_ptr<zmqpp::socket> pull_socket;
+	std::unique_ptr<zmqpp::socket> push_socket;
 	std::atomic<ServerConnection::State> currentState;
 	std::condition_variable running_condition;
 	std::mutex running_mutex;
