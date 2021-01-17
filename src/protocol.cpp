@@ -42,3 +42,10 @@ std::pair<std::string, Histogram> decodeHistogramResult(const std::string serial
 
 	return std::pair<std::string, Histogram>{ histogramReader.getFilename(), histogram };
 }
+
+zmqpp::message zmq_worker_helo() {
+	zmqpp::message message{};
+	message.add("HELO");
+
+	return message;
+}

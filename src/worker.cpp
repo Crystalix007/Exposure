@@ -18,20 +18,20 @@ bool ServerDetails::operator<(const ServerDetails& other) const noexcept {
 
 ServerConnection::ServerConnection(const std::string name, const std::string address,
                                    const uint16_t port)
-    : serverDetails{ name, address, port }, pull_socket{}, currentState{
+    : serverDetails{ name, address, port }, work_socket{}, currentState{
 	      ServerConnection::State::Unconnected
       } {
 	assert(address.length() == 4 || address.length() == 16);
 }
 
 ServerConnection::ServerConnection(const ServerDetails serverDetails)
-    : serverDetails{ serverDetails }, pull_socket{}, currentState{
+    : serverDetails{ serverDetails }, work_socket{}, currentState{
 	      ServerConnection::State::Unconnected
       } {}
 
 ServerConnection::ServerConnection(ServerConnection&& other)
-    : serverDetails{ other.serverDetails }, pull_socket{ std::move(other.pull_socket) },
-      push_socket{ std::move(other.push_socket) }, currentState{ other.currentState.load() } {}
+    : serverDetails{ other.serverDetails }, work_socket{ std::move(other.work_socket) },
+      currentState{ other.currentState.load() } {}
 
 ServerConnection::~ServerConnection() {
 	this->disconnect();
@@ -43,19 +43,19 @@ void ServerConnection::connect(zmqpp::context& context) {
 
 	if (this->currentState != ServerConnection::State::Dying) {
 		this->currentState = transitionState(ServerConnection::State::Connected);
-		pull_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::pull);
-		push_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::push);
+		work_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
 
-		pull_socket->set(zmqpp::socket_option::receive_high_water_mark, 1);
-		pull_socket->set(zmqpp::socket_option::conflate, true);
+		work_socket->set(zmqpp::socket_option::receive_high_water_mark, 1);
+		work_socket->set(zmqpp::socket_option::conflate, true);
 
-		const auto& endpoint = this->pull_endpoint();
+		const auto& endpoint = this->work_endpoint();
 		std::clog << "Worker connecting to " << endpoint << "\n";
-		pull_socket->connect(this->pull_endpoint());
-		push_socket->connect(this->push_endpoint());
+		work_socket->connect(this->work_endpoint());
 
-		assert(pull_socket);
-		assert(push_socket);
+		auto helo = zmq_worker_helo();
+		work_socket->send(helo);
+
+		assert(work_socket);
 	}
 }
 
@@ -64,9 +64,8 @@ void ServerConnection::disconnect() {
 		this->currentState = transitionState(ServerConnection::State::Dying);
 		std::unique_lock<std::mutex> lock{ this->running_mutex };
 		running_condition.wait(lock);
-		pull_socket->unbind(this->pull_endpoint());
-		pull_socket->unbind(this->pull_endpoint());
-		pull_socket.reset();
+		work_socket->unbind(this->work_endpoint());
+		work_socket.reset();
 	}
 }
 
@@ -79,17 +78,17 @@ bool ServerConnection::operator==(const ServerDetails& other) const noexcept {
 }
 
 bool ServerConnection::connected() const {
-	return static_cast<bool>(pull_socket);
+	return static_cast<bool>(work_socket);
 }
 
 void ServerConnection::run() {
 	assert(this->currentState != ServerConnection::State::Unconnected);
-	assert(this->pull_socket);
+	assert(this->work_socket);
 
 	while (this->state() != ServerConnection::State::Dying) {
 		// Do analysis
 		std::string message;
-		pull_socket->receive(message);
+		work_socket->receive(message);
 
 		std::cout << message << std::endl;
 
@@ -99,6 +98,8 @@ void ServerConnection::run() {
 
 		zmqpp::message response{};
 		response << encodeHistogramResult(message, histogram.value());
+
+		work_socket->send(response);
 	}
 
 	std::unique_lock<std::mutex> lock{ this->running_mutex };
@@ -129,16 +130,10 @@ ServerConnection::State ServerConnection::transitionState(ServerConnection::Stat
 	return this->currentState;
 }
 
-zmqpp::endpoint_t ServerConnection::pull_endpoint() const {
+zmqpp::endpoint_t ServerConnection::work_endpoint() const {
 	assert(this->connected());
 
 	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port);
-}
-
-zmqpp::endpoint_t ServerConnection::push_endpoint() const {
-	assert(this->connected());
-
-	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port + 1);
 }
 
 Worker::Worker() : connections{}, connectionsMutex{} {}

@@ -4,6 +4,6 @@
 
 #define DEBUG_SERVICE_DISCOVERY 1
 
-const constexpr std::uint16_t WORK_PORT = 42069;
-const constexpr std::uint16_t RESULT_PORT = WORK_PORT + 1;
-const constexpr uint32_t histogramSegments = 1 << 10ull;
+const constexpr std::uint16_t WORK_PORT = 42069u;
+const constexpr std::uint32_t MAX_WORKER_QUEUE = 2u;
+const constexpr uint32_t histogramSegments = 1ull << 10ull;
