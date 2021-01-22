@@ -50,15 +50,17 @@ public:
 
 	zmqpp::endpoint_t work_endpoint() const;
 
-	std::atomic<ServerConnection::State>& state();
 	ServerConnection::State state() const;
 
 	ServerConnection::State transitionState(ServerConnection::State nextState) const;
+	static ServerConnection::State transitionState(ServerConnection::State currentState,
+	                                               ServerConnection::State nextState);
 
 protected:
 	ServerDetails serverDetails;
 	std::unique_ptr<zmqpp::socket> work_socket;
-	std::atomic<ServerConnection::State> currentState;
+	ServerConnection::State currentState;
+	mutable std::mutex currentStateMutex;
 	std::condition_variable running_condition;
 	std::mutex running_mutex;
 };

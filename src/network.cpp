@@ -200,11 +200,14 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 			break;
 		case AVAHI_RESOLVER_FOUND: {
 			char a[AVAHI_ADDRESS_STR_MAX], *t;
+#if DEBUG_SERVICE_DISCOVERY
 			std::clog << "Service '" << name << "' of type '" << type << "' in domain '" << domain
 			          << " on IP version " << ip_version << "': "
 			          << "\n";
+#endif
 			avahi_address_snprint(a, sizeof(a), address);
 			t = avahi_string_list_to_string(txt);
+#if DEBUG_SERVICE_DISCOVERY
 			fprintf(stderr,
 			        "\t%s:%u (%s)\n"
 			        "\tTXT=%s\n"
@@ -218,6 +221,7 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 			        !!(flags & AVAHI_LOOKUP_RESULT_LOCAL), !!(flags & AVAHI_LOOKUP_RESULT_OUR_OWN),
 			        !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA), !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
 			        !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
+#endif
 			avahi_free(t);
 
 			if (ip_version == AVAHI_PROTO_INET6 &&
@@ -271,9 +275,11 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
 			break;
 		case AVAHI_BROWSER_ALL_FOR_NOW:
 		case AVAHI_BROWSER_CACHE_EXHAUSTED:
+#if DEBUG_SERVICE_DISCOVERY
 			const auto event_description =
 			    ((event == AVAHI_BROWSER_CACHE_EXHAUSTED) ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
 			std::clog << "(Browser) " << event_description << "\n";
+#endif
 			break;
 	}
 }

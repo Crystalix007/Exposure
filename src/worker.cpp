@@ -31,7 +31,7 @@ ServerConnection::ServerConnection(const ServerDetails serverDetails)
 
 ServerConnection::ServerConnection(ServerConnection&& other)
     : serverDetails{ other.serverDetails }, work_socket{ std::move(other.work_socket) },
-      currentState{ other.currentState.load() } {}
+      currentState{ other.currentState } {}
 
 ServerConnection::~ServerConnection() {
 	this->disconnect();
@@ -39,10 +39,12 @@ ServerConnection::~ServerConnection() {
 
 void ServerConnection::connect(zmqpp::context& context) {
 	assert(!this->connected());
-	assert(this->currentState != ServerConnection::State::Connected);
+	assert(this->state() != ServerConnection::State::Connected);
+
+	std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
 
 	if (this->currentState != ServerConnection::State::Dying) {
-		this->currentState = transitionState(ServerConnection::State::Connected);
+		ConnectingWorkerCommandVisitor visitor{ this->currentState };
 		work_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
 
 		work_socket->set(zmqpp::socket_option::receive_high_water_mark, 1);
@@ -52,19 +54,32 @@ void ServerConnection::connect(zmqpp::context& context) {
 		std::clog << "Worker connecting to " << endpoint << "\n";
 		work_socket->connect(this->work_endpoint());
 
-		auto helo = zmq_worker_helo();
-		work_socket->send(helo);
+		const auto heloCommand = WorkerHeloCommand{};
+		auto heloMessage = heloCommand.toMessage();
+		work_socket->send(heloMessage);
 
-		assert(work_socket);
+		std::string returnMessage{};
+		work_socket->receive(returnMessage);
+		const auto command = WorkerCommand::fromSerialisedString(returnMessage);
+		command->visit(visitor);
+
+		assert(this->currentState == ServerConnection::State::Connected);
 	}
 }
 
 void ServerConnection::disconnect() {
-	if (this->currentState != ServerConnection::State::Unconnected) {
+	ServerConnection::State previousState{};
+
+	{
+		std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
+		previousState = this->currentState;
 		this->currentState = transitionState(ServerConnection::State::Dying);
+	}
+
+	if (previousState != ServerConnection::State::Unconnected) {
 		std::unique_lock<std::mutex> lock{ this->running_mutex };
 		running_condition.wait(lock);
-		work_socket->unbind(this->work_endpoint());
+		work_socket->disconnect(this->work_endpoint());
 		work_socket.reset();
 	}
 }
@@ -86,36 +101,29 @@ void ServerConnection::run() {
 	assert(this->work_socket);
 
 	while (this->state() != ServerConnection::State::Dying) {
-		// Do analysis
 		std::string message;
 		work_socket->receive(message);
+		RunningWorkerCommandVisitor commandVisitor{ *this->work_socket };
 
-		std::cout << message << std::endl;
-
-		std::optional<Histogram> histogram = image_get_histogram(message);
-
-		assert(histogram);
-
-		zmqpp::message response{};
-		response << encodeHistogramResult(message, histogram.value());
-
-		work_socket->send(response);
+		WorkerCommand::fromSerialisedString(message)->visit(commandVisitor);
 	}
 
 	std::unique_lock<std::mutex> lock{ this->running_mutex };
 	this->running_condition.notify_all();
 }
 
-std::atomic<ServerConnection::State>& ServerConnection::state() {
-	return this->currentState;
-}
-
 ServerConnection::State ServerConnection::state() const {
+	std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
 	return this->currentState;
 }
 
 ServerConnection::State ServerConnection::transitionState(ServerConnection::State nextState) const {
-	switch (this->currentState) {
+	return ServerConnection::transitionState(this->currentState, nextState);
+}
+
+ServerConnection::State ServerConnection::transitionState(ServerConnection::State currentState,
+                                                          ServerConnection::State nextState) {
+	switch (currentState) {
 		case ServerConnection::State::Unconnected:
 			return nextState;
 		case ServerConnection::State::Connected:
@@ -127,7 +135,7 @@ ServerConnection::State ServerConnection::transitionState(ServerConnection::Stat
 			break;
 	}
 
-	return this->currentState;
+	return currentState;
 }
 
 zmqpp::endpoint_t ServerConnection::work_endpoint() const {
