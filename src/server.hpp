@@ -44,8 +44,10 @@ public:
 
 	void visitHelo(const WorkerHeloCommand& heloCommand) override;
 	void visitEhlo(const WorkerEhloCommand& ehloCommand) override;
-	void visitJob(const WorkerJobCommand& jobCommand) override;
-	void visitResult(const WorkerResultCommand& resultCommand) override;
+	void visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) override;
+	void visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand) override;
+	void visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) override;
+	void visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand) override;
 	void visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
 
 protected:

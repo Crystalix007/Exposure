@@ -50,7 +50,7 @@ public:
 	virtual ~WorkerHeloCommand() = default;
 
 	virtual void commandData(ProtocolCommand::Data::Builder& data_builder) const override;
-	void visit(CommandVisitor& visitor) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
 
 	static std::unique_ptr<WorkerHeloCommand> fromData();
 };
@@ -61,36 +61,90 @@ public:
 	virtual ~WorkerEhloCommand() = default;
 
 	virtual void commandData(ProtocolCommand::Data::Builder& data_builder) const override;
-	void visit(CommandVisitor& visitor) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
 
 	static std::unique_ptr<WorkerEhloCommand> fromData();
 };
 
 class WorkerJobCommand : public WorkerCommand {
 public:
-	WorkerJobCommand(const std::string& filename);
+	WorkerJobCommand(const std::string& job_type);
 	virtual ~WorkerJobCommand() = default;
 
 	virtual void commandData(ProtocolCommand::Data::Builder& data_builder) const override;
-	void visit(CommandVisitor& visitor) const override;
+
+	// Require child classes to be able to build the job component of command's data
+	virtual void commandData(ProtocolJob::Data::Builder& data_builder) const = 0;
+
+	static std::unique_ptr<WorkerJobCommand> fromData(const ProtocolJob::Reader reader);
+
+protected:
+	std::string job_type;
+};
+
+class WorkerHistogramJobCommand : public WorkerJobCommand {
+public:
+	WorkerHistogramJobCommand(const std::string& filename);
+
+	virtual void commandData(ProtocolJob::Data::Builder& data_builder) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
 
 	std::string getFilename() const;
 
-	static std::unique_ptr<WorkerJobCommand> fromData(const capnp::Text::Reader filename);
+	static std::unique_ptr<WorkerHistogramJobCommand> fromData(const HistogramJob::Reader reader);
 
 protected:
 	std::string filename;
 };
 
+class WorkerEqualisationJobCommand : public WorkerJobCommand {
+public:
+	WorkerEqualisationJobCommand(const std::string& filename, float shadowOffset, float midOffset,
+	                             float highlightOffset);
+
+	virtual void commandData(ProtocolJob::Data::Builder& data_builder) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
+
+	std::string getFilename() const;
+	float getShadowOffset() const;
+	float getMidOffset() const;
+	float getHighlightOffset() const;
+
+	static std::unique_ptr<WorkerEqualisationJobCommand>
+	fromData(const EqualisationJob::Reader reader);
+
+protected:
+	std::string filename;
+	float shadowOffset;
+	float midOffset;
+	float highlightOffset;
+};
+
 class WorkerResultCommand : public WorkerCommand {
 public:
-	WorkerResultCommand(const std::string& filename, const Histogram& histogram);
+	WorkerResultCommand(const std::string& result_type);
 	virtual ~WorkerResultCommand() = default;
 
 	virtual void commandData(ProtocolCommand::Data::Builder& data_builder) const override;
-	void visit(CommandVisitor& visitor) const override;
 
-	static std::unique_ptr<WorkerResultCommand>
+	// Require child classes to be able to build the result component of command's data
+	virtual void commandData(ProtocolResult::Data::Builder& data_builder) const = 0;
+
+	static std::unique_ptr<WorkerResultCommand> fromData(const ProtocolResult::Reader reader);
+
+protected:
+	std::string result_type;
+};
+
+class WorkerHistogramResultCommand : public WorkerResultCommand {
+public:
+	WorkerHistogramResultCommand(const std::string& filename, const Histogram& histogram);
+	virtual ~WorkerHistogramResultCommand() = default;
+
+	virtual void commandData(ProtocolResult::Data::Builder& data_builder) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
+
+	static std::unique_ptr<WorkerHistogramResultCommand>
 	fromData(const HistogramResult::Reader histogram_result);
 
 	std::string getFilename() const;
@@ -101,13 +155,32 @@ protected:
 	Histogram histogram;
 };
 
+class WorkerEqualisationResultCommand : public WorkerResultCommand {
+public:
+	WorkerEqualisationResultCommand(const std::string& filename,
+	                                const std::vector<std::uint8_t>& tiff_data);
+	virtual ~WorkerEqualisationResultCommand() = default;
+
+	virtual void commandData(ProtocolResult::Data::Builder& data_builder) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
+
+	static std::unique_ptr<WorkerEqualisationResultCommand>
+	fromData(const EqualisationResult::Reader equalisation_result);
+
+	std::string getFilename() const;
+
+protected:
+	std::string filename;
+	std::vector<std::uint8_t> tiff_data;
+};
+
 class WorkerHeartbeatCommand : public WorkerCommand {
 public:
 	WorkerHeartbeatCommand(const std::string& peer_name);
 	virtual ~WorkerHeartbeatCommand() = default;
 
 	virtual void commandData(ProtocolCommand::Data::Builder& data_builder) const override;
-	void visit(CommandVisitor& visitor) const override;
+	virtual void visit(CommandVisitor& visitor) const override;
 
 	std::string getPeerName() const;
 
@@ -123,8 +196,10 @@ public:
 
 	virtual void visitHelo(const WorkerHeloCommand& heloCommand);
 	virtual void visitEhlo(const WorkerEhloCommand& ehloCommand);
-	virtual void visitJob(const WorkerJobCommand& jobCommand);
-	virtual void visitResult(const WorkerResultCommand& resultCommand);
+	virtual void visitHistogramJob(const WorkerHistogramJobCommand& jobCommand);
+	virtual void visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand);
+	virtual void visitHistogramResult(const WorkerHistogramResultCommand& resultCommand);
+	virtual void visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand);
 	virtual void visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand);
 };
 
@@ -144,8 +219,10 @@ public:
 
 	void visitHelo(const WorkerHeloCommand& heloCommand) override;
 	void visitEhlo(const WorkerEhloCommand& ehloCommand) override;
-	void visitJob(const WorkerJobCommand& jobCommand) override;
-	void visitResult(const WorkerResultCommand& resultCommand) override;
+	void visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) override;
+	void visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand) override;
+	void visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) override;
+	void visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand) override;
 	void visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
 
 protected:

@@ -50,10 +50,10 @@ void Server::transmit_work(const std::string& worker) {
 	while (worker_queues.at(worker).size() < MAX_WORKER_QUEUE) {
 		const std::string work_item = enqueued_work.front();
 		zmqpp::message message{};
-		message.add(worker);
-		WorkerJobCommand{ work_item }.addToMessage(message);
+
+		WorkerHistogramJobCommand{ work_item }.addToMessage(message);
 		enqueued_work.pop();
-		work_socket.send(message);
+		send_message(worker, std::move(message));
 		worker_queues.at(worker).push_back(work_item);
 	}
 }
@@ -100,13 +100,18 @@ void ServerCommandVisitor::visitEhlo(const WorkerEhloCommand& ehloCommand) {
 	DEBUG_NETWORK("Visited Worker Ehlo (unexpected)\n");
 }
 
-void ServerCommandVisitor::visitJob(const WorkerJobCommand& jobCommand) {
+void ServerCommandVisitor::visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited Worker Job (unexpected)\n");
 }
 
-void ServerCommandVisitor::visitResult(const WorkerResultCommand& resultCommand) {
-	/* Add result to list of results. */
+void ServerCommandVisitor::visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Job (unexpected)\n");
+}
+
+void ServerCommandVisitor::visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) {
+	/* Add result to list of histogram results. */
 	DEBUG_NETWORK("Visited Worker Result\n");
 
 	try {
@@ -119,6 +124,12 @@ void ServerCommandVisitor::visitResult(const WorkerResultCommand& resultCommand)
 	} catch (std::out_of_range& exception) {
 		std::clog << "Invalid result from unknown (unregistered) worker: " << worker_identity << "\n";
 	}
+}
+
+void ServerCommandVisitor::visitEqualisationResult(
+    const WorkerEqualisationResultCommand& resultCommand) {
+	/* TODO: Implement. */
+	/* Add result to list of equalisation results, and save file somewhere. */
 }
 
 void ServerCommandVisitor::visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
