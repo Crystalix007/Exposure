@@ -197,46 +197,42 @@ bool WorkerHistogramJobCommand::operator==(const WorkerResultCommand& other) con
 	return this->filename == otherHistogramJob.filename;
 }
 
-WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(const std::string& filename,
-                                                           float shadowOffset, float midOffset,
-                                                           float highlightOffset)
-    : WorkerJobCommand{ "EQUALISATION" }, filename{ filename },
-      shadowOffset{ shadowOffset }, midOffset{ midOffset }, highlightOffset{ highlightOffset } {}
+WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(
+    const std::string& filename, const EqualisationHistogramMapping& histogramOffsets)
+    : WorkerJobCommand{ "EQUALISATION" }, filename{ filename }, histogramOffsets{
+	      histogramOffsets
+      } {}
 
 std::unique_ptr<WorkerEqualisationJobCommand>
 WorkerEqualisationJobCommand::fromData(const EqualisationJob::Reader reader) {
 	const std::string filename{ reader.getFilename() };
-	const float shadowOffset = reader.getShadowOffset();
-	const float midOffset = reader.getMidOffset();
-	const float highlightOffset = reader.getHighlightOffset();
+	const auto messageHistogramOffsets = reader.getHistogramOffsets();
+	EqualisationHistogramMapping mapping{};
 
-	return std::make_unique<WorkerEqualisationJobCommand>(filename, shadowOffset, midOffset,
-	                                                      highlightOffset);
+	for (size_t i = 0; i < mapping.size(); i++) {
+		mapping[i] = messageHistogramOffsets[i];
+	}
+
+	return std::make_unique<WorkerEqualisationJobCommand>(filename, mapping);
 }
 
 void WorkerEqualisationJobCommand::commandData(ProtocolJob::Data::Builder& data_builder) const {
-	auto equilisation_job = data_builder.initEqualisation();
+	auto equalisation_job = data_builder.initEqualisation();
 
-	equilisation_job.setFilename(this->filename);
-	equilisation_job.setShadowOffset(this->shadowOffset);
-	equilisation_job.setMidOffset(this->midOffset);
-	equilisation_job.setHighlightOffset(this->highlightOffset);
+	equalisation_job.setFilename(this->filename);
+	auto jobHistogramOffsets = equalisation_job.initHistogramOffsets(this->histogramOffsets.size());
+
+	for (size_t i = 0; i < this->histogramOffsets.size(); i++) {
+		jobHistogramOffsets.set(i, this->histogramOffsets[i]);
+	}
 }
 
 std::string WorkerEqualisationJobCommand::getFilename() const {
 	return this->filename;
 }
 
-float WorkerEqualisationJobCommand::getShadowOffset() const {
-	return this->shadowOffset;
-}
-
-float WorkerEqualisationJobCommand::getMidOffset() const {
-	return this->midOffset;
-}
-
-float WorkerEqualisationJobCommand::getHighlightOffset() const {
-	return this->highlightOffset;
+EqualisationHistogramMapping WorkerEqualisationJobCommand::getHistogramOffsets() const {
+	return this->histogramOffsets;
 }
 
 void WorkerEqualisationJobCommand::visit(CommandVisitor& visitor) const {
@@ -486,12 +482,9 @@ void RunningWorkerCommandVisitor::visitHistogramJob(const WorkerHistogramJobComm
 void RunningWorkerCommandVisitor::visitEqualisationJob(
     const WorkerEqualisationJobCommand& jobCommand) {
 	/* Run job. */
-	DEBUG_NETWORK("Visited server Equalisation Job ("
-	              << jobCommand.getShadowOffset() << ", " << jobCommand.getMidOffset() << ", "
-	              << jobCommand.getHighlightOffset() << "): " << jobCommand.getFilename() << "\n");
+	DEBUG_NETWORK("Visited server Equalisation Job: " << jobCommand.getFilename() << "\n");
 	std::vector<std::uint8_t> tiff_file =
-	    image_equalise(jobCommand.getFilename(), jobCommand.getShadowOffset(),
-	                   jobCommand.getMidOffset(), jobCommand.getHighlightOffset());
+	    image_equalise(jobCommand.getFilename(), jobCommand.getHistogramOffsets());
 
 	zmqpp::message response{
 		WorkerEqualisationResultCommand{ jobCommand.getFilename(), tiff_file }.toMessage()

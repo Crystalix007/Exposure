@@ -47,15 +47,14 @@ void Server::serve_work(const std::filesystem::path& serve_path) {
 
 	std::clog << "Calculating brightness variations over " << histograms.size() << " histograms.\n";
 
-	enqueued_work.push(
-	    std::make_unique<WorkerEqualisationJobCommand>(prev_histogram_pointer->first, 0.f, 0.f, 0.f));
+	enqueued_work.push(std::make_unique<WorkerEqualisationJobCommand>(
+	    prev_histogram_pointer->first, identity_equalisation_histogram_mapping()));
 
 	while (curr_histogram_pointer != histograms.end()) {
 		const auto eqParams =
 		    get_equalisation_parameters(prev_histogram_pointer->second, curr_histogram_pointer->second);
 		const auto currFilename = curr_histogram_pointer->first;
-		enqueued_work.push(std::make_unique<WorkerEqualisationJobCommand>(
-		    currFilename, eqParams.shadowOffset, eqParams.midOffset, eqParams.highlightOffset));
+		enqueued_work.push(std::make_unique<WorkerEqualisationJobCommand>(currFilename, eqParams));
 
 		prev_histogram_pointer = curr_histogram_pointer;
 		curr_histogram_pointer++;

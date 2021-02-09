@@ -113,16 +113,14 @@ protected:
 
 class WorkerEqualisationJobCommand : public WorkerJobCommand {
 public:
-	WorkerEqualisationJobCommand(const std::string& filename, float shadowOffset, float midOffset,
-	                             float highlightOffset);
+	WorkerEqualisationJobCommand(const std::string& filename,
+	                             const EqualisationHistogramMapping& histogramOffsets);
 
 	virtual void commandData(ProtocolJob::Data::Builder& data_builder) const override;
 	virtual void visit(CommandVisitor& visitor) const override;
 
 	std::string getFilename() const;
-	float getShadowOffset() const;
-	float getMidOffset() const;
-	float getHighlightOffset() const;
+	EqualisationHistogramMapping getHistogramOffsets() const;
 
 	static std::unique_ptr<WorkerEqualisationJobCommand>
 	fromData(const EqualisationJob::Reader reader);
@@ -132,9 +130,7 @@ public:
 
 protected:
 	std::string filename;
-	float shadowOffset;
-	float midOffset;
-	float highlightOffset;
+	EqualisationHistogramMapping histogramOffsets;
 
 	friend WorkerEqualisationResultCommand;
 };

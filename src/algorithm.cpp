@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <numeric>
 
 #include <Magick++.h>
 
@@ -45,9 +46,9 @@ compute_lightness_histogram(const Magick::Image& lightness_channel) {
 
 	for (size_t y = 0; y < lightness_channel.rows(); y++) {
 		for (size_t x = 0; x < lightness_channel.columns(); x++) {
-			const float pixel = pixels[x + y * lightness_channel.columns()] * QuantumScale;
-			const float decimal_bucket = pixel * (histogramSegments - 1);
-			histogram[static_cast<uint32_t>(std::round(decimal_bucket))]++;
+			const float pixel = pixels[x + y * lightness_channel.columns()] / QuantumRange;
+			const float bucket = std::round(pixel * (histogramSegments - 1));
+			histogram[static_cast<uint32_t>(bucket)]++;
 		}
 	}
 
@@ -87,61 +88,73 @@ struct EqualisationBand {
 	}
 };
 
-EqualisationParameters get_equalisation_parameters(const Histogram& previousHistogram,
-                                                   const Histogram& currentHistogram) {
-	EqualisationBand previousShadows{ .25f }, currentShadows{ .25f };
-	EqualisationBand previousMidpoint{ .5f }, currentMidpoint{ .5f };
-	EqualisationBand previousHighlights{ .75f }, currentHighlights{ .75f };
+EqualisationHistogramMapping identity_equalisation_histogram_mapping() {
+	EqualisationHistogramMapping mapping{};
+	std::iota(mapping.begin(), mapping.end(), 0);
+	return mapping;
+}
 
-	double cumulativePreviousProportion = 0.0;
-	double cumulativeCurrentProportion = 0.0;
+EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previousHistogram,
+                                                         const Histogram& currentHistogram) {
+	double cumulativePreviousHistogram = 0.0, cumulativeCurrentHistogram = 0.0;
+	uint32_t previousHistogramBin = 0;
 
-	for (size_t i = 0; i < histogramSegments; i++) {
-		const float currentLevel = static_cast<float>(i) / static_cast<float>(histogramSegments);
-		cumulativePreviousProportion += previousHistogram[i];
-		cumulativeCurrentProportion += currentHistogram[i];
+	EqualisationHistogramMapping mapping{};
 
-		previousShadows.assignBestProportion(cumulativePreviousProportion, currentLevel);
-		previousMidpoint.assignBestProportion(cumulativePreviousProportion, currentLevel);
-		previousHighlights.assignBestProportion(cumulativePreviousProportion, currentLevel);
+	for (uint32_t currentHistogramBin = 0; currentHistogramBin != currentHistogram.size() - 1 ||
+	                                       previousHistogramBin != previousHistogram.size() - 1;) {
+		mapping[currentHistogramBin] = previousHistogramBin;
 
-		currentShadows.assignBestProportion(cumulativeCurrentProportion, currentLevel);
-		currentMidpoint.assignBestProportion(cumulativeCurrentProportion, currentLevel);
-		currentHighlights.assignBestProportion(cumulativeCurrentProportion, currentLevel);
+		if (cumulativeCurrentHistogram < cumulativePreviousHistogram) {
+			if (currentHistogramBin < currentHistogram.size() - 1) {
+				cumulativeCurrentHistogram += currentHistogram[currentHistogramBin];
+				currentHistogramBin++;
+			} else {
+				cumulativePreviousHistogram += previousHistogram[previousHistogramBin];
+				previousHistogramBin++;
+			}
+		} else if (cumulativeCurrentHistogram > cumulativePreviousHistogram) {
+			if (previousHistogramBin < previousHistogram.size() - 1) {
+				cumulativePreviousHistogram += previousHistogram[previousHistogramBin];
+				previousHistogramBin++;
+			} else {
+				cumulativeCurrentHistogram += currentHistogram[currentHistogramBin];
+				currentHistogramBin++;
+			}
+		} else if (cumulativeCurrentHistogram == cumulativePreviousHistogram) {
+			if (currentHistogramBin < currentHistogram.size() - 1) {
+				cumulativeCurrentHistogram += currentHistogram[currentHistogramBin];
+				currentHistogramBin++;
+			}
+
+			if (previousHistogramBin < previousHistogram.size() - 1) {
+				cumulativePreviousHistogram += previousHistogram[previousHistogramBin];
+				previousHistogramBin++;
+			}
+		} else {
+			throw std::logic_error{ "Floating comparison failed" };
+		}
 	}
 
-	EqualisationParameters eqParams{
-		(previousShadows.level - currentShadows.level) * QuantumRange,
-		(previousMidpoint.level - currentMidpoint.level) * QuantumRange,
-		(previousHighlights.level - currentHighlights.level) * QuantumRange,
-	};
-
-	return eqParams;
+	return mapping;
 }
 
 constexpr Magick::Quantum lerp(Magick::Quantum a, Magick::Quantum b, Magick::Quantum t) noexcept {
 	return a + t * (b - a);
 }
 
-Magick::Quantum linear_map(Magick::Quantum value, const Magick::Quantum shadowOffset,
-                           const Magick::Quantum midOffset, const Magick::Quantum highlightOffset) {
-	const Magick::Quantum midpoint = QuantumRange / 2;
-	const Magick::Quantum lower_tail = QuantumRange * 0.25;
-	const Magick::Quantum upper_tail = QuantumRange - lower_tail;
+Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMapping& mapping) {
+	const uint32_t histogram_bin =
+	    static_cast<size_t>(round((static_cast<double>(value) / static_cast<double>(QuantumRange)) *
+	                              static_cast<double>(mapping.size() - 1)));
 
-	if (value < lower_tail) {
-		return value;
-	} else if (value < midpoint) {
-		return value + lerp(shadowOffset, midOffset, (value - lower_tail) / (midpoint - lower_tail));
-	} else if (value < upper_tail) {
-		return value + lerp(midOffset, highlightOffset, (value - midpoint) / (upper_tail - midpoint));
-	} else {
-		return value;
-	}
+	return static_cast<Magick::Quantum>(
+	    (static_cast<double>(mapping[histogram_bin] * static_cast<double>(QuantumRange)) /
+	     static_cast<double>(mapping.size() - 1)));
 }
 
-std::vector<std::uint8_t> image_equalise(const std::string& filename, const float shadowOffset,
-                                         const float midOffset, const float highlightOffset) {
+std::vector<std::uint8_t> image_equalise(const std::string& filename,
+                                         const EqualisationHistogramMapping& mapping) {
 	Magick::Image image{};
 
 	try {
@@ -159,7 +172,7 @@ std::vector<std::uint8_t> image_equalise(const std::string& filename, const floa
 
 	for (size_t row = 0; row < image.rows(); row++) {
 		for (size_t col = 0; col < image.columns(); col++) {
-			*pixels = linear_map(*pixels, shadowOffset, midOffset, highlightOffset);
+			*pixels = linear_map(*pixels, mapping);
 			pixels += 3; // Move forward by the three channels in image
 		}
 	}
@@ -168,8 +181,8 @@ std::vector<std::uint8_t> image_equalise(const std::string& filename, const floa
 
 	Magick::Blob blob{};
 
-	image.magick("TIFF");
 	image.colorSpace(Magick::sRGBColorspace);
+	image.magick("TIFF");
 	image.write(&blob);
 
 	const auto blob_data = static_cast<const std::uint8_t*>(blob.data());

@@ -15,10 +15,8 @@ struct HistogramJob {
 }
 
 struct EqualisationJob {
-	filename        @0 : Text;
-	shadowOffset    @1 : Float32;
-	midOffset       @2 : Float32;
-	highlightOffset @3 : Float32;
+	filename         @0 : Text;
+	histogramOffsets @1 : List(UInt32);
 }
 
 struct ProtocolJob {
