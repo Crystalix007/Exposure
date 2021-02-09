@@ -25,7 +25,7 @@ struct ProtocolJob {
 	type @0 : Text;
 	data    : union {
 		histogram    @1 : HistogramJob;
-		equilisation @2 : EqualisationJob;
+		equalisation @2 : EqualisationJob;
 	}
 }
 

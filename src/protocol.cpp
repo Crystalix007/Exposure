@@ -59,7 +59,11 @@ WorkerCommand::fromSerialisedString(const std::string& serialised_string) {
 	std::unique_ptr<capnp::word[]> word_array{ new capnp::word[word_count] };
 	std::memcpy(word_array.get(), serialised_string.c_str(), serialised_string.size() * sizeof(char));
 	const kj::ArrayPtr<capnp::word> word_array_ptr{ word_array.get(), word_count };
-	capnp::FlatArrayMessageReader message_reader{ word_array_ptr };
+	capnp::ReaderOptions commandReaderOptions{};
+	// Raise message size limit to 4GB (somewhat reasonable per tiff image)
+	commandReaderOptions.traversalLimitInWords = 4ull * 1024ull * 1024ull * 1024ull;
+
+	capnp::FlatArrayMessageReader message_reader{ word_array_ptr, commandReaderOptions };
 
 	const auto commandReader = message_reader.getRoot<ProtocolCommand>();
 
@@ -135,10 +139,20 @@ std::unique_ptr<WorkerJobCommand> WorkerJobCommand::fromData(const ProtocolJob::
 		case ProtocolJob::Data::HISTOGRAM:
 			assert(decoded_type == "HISTOGRAM");
 			return WorkerHistogramJobCommand::fromData(data.getHistogram());
-		case ProtocolJob::Data::EQUILISATION:
-			assert(decoded_type == "EQUILISATION");
-			return WorkerEqualisationJobCommand::fromData(data.getEquilisation());
+		case ProtocolJob::Data::EQUALISATION:
+			assert(decoded_type == "EQUALISATION");
+			return WorkerEqualisationJobCommand::fromData(data.getEqualisation());
+		default:
+			return nullptr;
 	}
+}
+
+bool WorkerJobCommand::operator==(const WorkerJobCommand& other) const {
+	return this->job_type == other.job_type;
+}
+
+bool WorkerJobCommand::operator==(const WorkerResultCommand& other) const {
+	return this->job_type == other.result_type;
 }
 
 WorkerHistogramJobCommand::WorkerHistogramJobCommand(const std::string& filename)
@@ -163,6 +177,26 @@ void WorkerHistogramJobCommand::visit(CommandVisitor& visitor) const {
 	return visitor.visitHistogramJob(*this);
 }
 
+bool WorkerHistogramJobCommand::operator==(const WorkerJobCommand& other) const {
+	if (!WorkerJobCommand::operator==(other)) {
+		return false;
+	}
+
+	const auto& otherHistogramJob = dynamic_cast<const WorkerHistogramJobCommand&>(other);
+
+	return this->filename == otherHistogramJob.filename;
+}
+
+bool WorkerHistogramJobCommand::operator==(const WorkerResultCommand& other) const {
+	if (!WorkerJobCommand::operator==(other)) {
+		return false;
+	}
+
+	const auto& otherHistogramJob = dynamic_cast<const WorkerHistogramResultCommand&>(other);
+
+	return this->filename == otherHistogramJob.filename;
+}
+
 WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(const std::string& filename,
                                                            float shadowOffset, float midOffset,
                                                            float highlightOffset)
@@ -181,7 +215,7 @@ WorkerEqualisationJobCommand::fromData(const EqualisationJob::Reader reader) {
 }
 
 void WorkerEqualisationJobCommand::commandData(ProtocolJob::Data::Builder& data_builder) const {
-	auto equilisation_job = data_builder.initEquilisation();
+	auto equilisation_job = data_builder.initEqualisation();
 
 	equilisation_job.setFilename(this->filename);
 	equilisation_job.setShadowOffset(this->shadowOffset);
@@ -209,6 +243,26 @@ void WorkerEqualisationJobCommand::visit(CommandVisitor& visitor) const {
 	return visitor.visitEqualisationJob(*this);
 }
 
+bool WorkerEqualisationJobCommand::operator==(const WorkerJobCommand& other) const {
+	if (!WorkerJobCommand::operator==(other)) {
+		return false;
+	}
+
+	const auto& otherEqualisationJob = dynamic_cast<const WorkerEqualisationJobCommand&>(other);
+
+	return this->filename == otherEqualisationJob.filename;
+}
+
+bool WorkerEqualisationJobCommand::operator==(const WorkerResultCommand& other) const {
+	if (!WorkerJobCommand::operator==(other)) {
+		return false;
+	}
+
+	const auto& otherEqualisationJob = dynamic_cast<const WorkerEqualisationResultCommand&>(other);
+
+	return this->filename == otherEqualisationJob.filename;
+}
+
 WorkerResultCommand::WorkerResultCommand(const std::string& result_type)
     : WorkerCommand{ "RESULT" }, result_type{ result_type } {}
 
@@ -232,7 +286,17 @@ WorkerResultCommand::fromData(const ProtocolResult::Reader reader) {
 		case ProtocolResult::Data::EQUALISATION:
 			assert(decoded_type == "EQUALISATION");
 			return WorkerEqualisationResultCommand::fromData(data.getEqualisation());
+		default:
+			return nullptr;
 	}
+}
+
+bool WorkerResultCommand::operator==(const WorkerJobCommand& other) const {
+	return this->result_type == other.job_type;
+}
+
+bool WorkerResultCommand::operator==(const WorkerResultCommand& other) const {
+	return this->result_type == other.result_type;
 }
 
 WorkerHistogramResultCommand::WorkerHistogramResultCommand(const std::string& filename,
@@ -276,6 +340,26 @@ Histogram WorkerHistogramResultCommand::getHistogram() const {
 	return this->histogram;
 }
 
+bool WorkerHistogramResultCommand::operator==(const WorkerJobCommand& jobCommand) const {
+	if (!WorkerResultCommand::operator==(jobCommand)) {
+		return false;
+	}
+
+	const auto& histogramJobCommand = dynamic_cast<const WorkerHistogramJobCommand&>(jobCommand);
+
+	return this->filename == histogramJobCommand.filename;
+}
+
+bool WorkerHistogramResultCommand::operator==(const WorkerResultCommand& jobCommand) const {
+	if (!WorkerResultCommand::operator==(jobCommand)) {
+		return false;
+	}
+
+	const auto& histogramJobCommand = dynamic_cast<const WorkerHistogramResultCommand&>(jobCommand);
+
+	return this->filename == histogramJobCommand.filename;
+}
+
 WorkerEqualisationResultCommand::WorkerEqualisationResultCommand(
     const std::string& filename, const std::vector<std::uint8_t>& tiff_data)
     : WorkerResultCommand{ "EQUALISATION" }, filename{ filename }, tiff_data{ tiff_data } {}
@@ -291,8 +375,10 @@ WorkerEqualisationResultCommand::fromData(const EqualisationResult::Reader equal
 
 void WorkerEqualisationResultCommand::commandData(
     ProtocolResult::Data::Builder& data_builder) const {
-	HistogramResult::Builder equalisation_builder = data_builder.getHistogram();
+	EqualisationResult::Builder equalisation_builder = data_builder.initEqualisation();
 	equalisation_builder.setFilename(filename);
+	auto tiffResultBuilder = equalisation_builder.initTiffResult(this->tiff_data.size());
+	std::copy(this->tiff_data.begin(), this->tiff_data.end(), tiffResultBuilder.begin());
 }
 
 void WorkerEqualisationResultCommand::visit(CommandVisitor& visitor) const {
@@ -301,6 +387,32 @@ void WorkerEqualisationResultCommand::visit(CommandVisitor& visitor) const {
 
 std::string WorkerEqualisationResultCommand::getFilename() const {
 	return this->filename;
+}
+
+std::vector<std::uint8_t> WorkerEqualisationResultCommand::getTiffData() const {
+	return this->tiff_data;
+}
+
+bool WorkerEqualisationResultCommand::operator==(const WorkerJobCommand& jobCommand) const {
+	if (!WorkerResultCommand::operator==(jobCommand)) {
+		return false;
+	}
+
+	const auto& equalisationJobCommand =
+	    dynamic_cast<const WorkerEqualisationJobCommand&>(jobCommand);
+
+	return this->filename == equalisationJobCommand.filename;
+}
+
+bool WorkerEqualisationResultCommand::operator==(const WorkerResultCommand& jobCommand) const {
+	if (!WorkerResultCommand::operator==(jobCommand)) {
+		return false;
+	}
+
+	const auto& equalisationJobCommand =
+	    dynamic_cast<const WorkerEqualisationResultCommand&>(jobCommand);
+
+	return this->filename == equalisationJobCommand.filename;
 }
 
 WorkerHeartbeatCommand::WorkerHeartbeatCommand(const std::string& peer_name)
@@ -359,7 +471,7 @@ void RunningWorkerCommandVisitor::visitEhlo(const WorkerEhloCommand& ehloCommand
 
 void RunningWorkerCommandVisitor::visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) {
 	/* Run job. */
-	DEBUG_NETWORK("Visited server Histogram Job\n");
+	DEBUG_NETWORK("Visited server Histogram Job: " << jobCommand.getFilename() << "\n");
 	std::optional<Histogram> histogram = image_get_histogram(jobCommand.getFilename());
 
 	assert(histogram);
@@ -374,10 +486,18 @@ void RunningWorkerCommandVisitor::visitHistogramJob(const WorkerHistogramJobComm
 void RunningWorkerCommandVisitor::visitEqualisationJob(
     const WorkerEqualisationJobCommand& jobCommand) {
 	/* Run job. */
-	DEBUG_NETWORK("Visited server Equalisation Job\n");
+	DEBUG_NETWORK("Visited server Equalisation Job ("
+	              << jobCommand.getShadowOffset() << ", " << jobCommand.getMidOffset() << ", "
+	              << jobCommand.getHighlightOffset() << "): " << jobCommand.getFilename() << "\n");
 	std::vector<std::uint8_t> tiff_file =
 	    image_equalise(jobCommand.getFilename(), jobCommand.getShadowOffset(),
 	                   jobCommand.getMidOffset(), jobCommand.getHighlightOffset());
+
+	zmqpp::message response{
+		WorkerEqualisationResultCommand{ jobCommand.getFilename(), tiff_file }.toMessage()
+	};
+
+	this->socket.send(response);
 }
 
 void RunningWorkerCommandVisitor::visitHistogramResult(

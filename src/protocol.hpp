@@ -66,6 +66,10 @@ public:
 	static std::unique_ptr<WorkerEhloCommand> fromData();
 };
 
+class WorkerResultCommand;
+class WorkerHistogramResultCommand;
+class WorkerEqualisationResultCommand;
+
 class WorkerJobCommand : public WorkerCommand {
 public:
 	WorkerJobCommand(const std::string& job_type);
@@ -78,8 +82,13 @@ public:
 
 	static std::unique_ptr<WorkerJobCommand> fromData(const ProtocolJob::Reader reader);
 
+	virtual bool operator==(const WorkerJobCommand& other) const;
+	virtual bool operator==(const WorkerResultCommand& resultCommand) const;
+
 protected:
 	std::string job_type;
+
+	friend WorkerResultCommand;
 };
 
 class WorkerHistogramJobCommand : public WorkerJobCommand {
@@ -93,8 +102,13 @@ public:
 
 	static std::unique_ptr<WorkerHistogramJobCommand> fromData(const HistogramJob::Reader reader);
 
+	virtual bool operator==(const WorkerJobCommand& other) const override;
+	virtual bool operator==(const WorkerResultCommand& other) const override;
+
 protected:
 	std::string filename;
+
+	friend WorkerHistogramResultCommand;
 };
 
 class WorkerEqualisationJobCommand : public WorkerJobCommand {
@@ -113,11 +127,16 @@ public:
 	static std::unique_ptr<WorkerEqualisationJobCommand>
 	fromData(const EqualisationJob::Reader reader);
 
+	virtual bool operator==(const WorkerJobCommand& other) const override;
+	virtual bool operator==(const WorkerResultCommand& other) const override;
+
 protected:
 	std::string filename;
 	float shadowOffset;
 	float midOffset;
 	float highlightOffset;
+
+	friend WorkerEqualisationResultCommand;
 };
 
 class WorkerResultCommand : public WorkerCommand {
@@ -132,8 +151,13 @@ public:
 
 	static std::unique_ptr<WorkerResultCommand> fromData(const ProtocolResult::Reader reader);
 
+	virtual bool operator==(const WorkerJobCommand& jobCommand) const;
+	virtual bool operator==(const WorkerResultCommand& other) const;
+
 protected:
 	std::string result_type;
+
+	friend WorkerJobCommand;
 };
 
 class WorkerHistogramResultCommand : public WorkerResultCommand {
@@ -150,9 +174,14 @@ public:
 	std::string getFilename() const;
 	Histogram getHistogram() const;
 
+	virtual bool operator==(const WorkerJobCommand& jobCommand) const override;
+	virtual bool operator==(const WorkerResultCommand& other) const override;
+
 protected:
 	std::string filename;
 	Histogram histogram;
+
+	friend WorkerHistogramJobCommand;
 };
 
 class WorkerEqualisationResultCommand : public WorkerResultCommand {
@@ -168,10 +197,16 @@ public:
 	fromData(const EqualisationResult::Reader equalisation_result);
 
 	std::string getFilename() const;
+	std::vector<std::uint8_t> getTiffData() const;
+
+	virtual bool operator==(const WorkerJobCommand& jobCommand) const override;
+	virtual bool operator==(const WorkerResultCommand& other) const override;
 
 protected:
 	std::string filename;
 	std::vector<std::uint8_t> tiff_data;
+
+	friend WorkerEqualisationJobCommand;
 };
 
 class WorkerHeartbeatCommand : public WorkerCommand {

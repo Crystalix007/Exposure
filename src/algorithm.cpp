@@ -62,18 +62,81 @@ compute_lightness_histogram(const Magick::Image& lightness_channel) {
 	return proportional_histogram;
 }
 
+struct EqualisationBand {
+	float level;
+	float cumulativeProportionLess;
+	const float targetProportionLess;
+
+	EqualisationBand(const float targetProportion)
+	    : level{ 0.f }, cumulativeProportionLess{ 0.f }, targetProportionLess{ targetProportion } {}
+
+	float operator-(const EqualisationBand& other) {
+		return this->level - other.level;
+	}
+
+	bool isNewProportionCloser(const float newProportion) {
+		return abs(cumulativeProportionLess - targetProportionLess) >
+		       abs(newProportion - targetProportionLess);
+	}
+
+	void assignBestProportion(const float newProportionLess, const float level) {
+		if (this->isNewProportionCloser(newProportionLess)) {
+			this->cumulativeProportionLess = newProportionLess;
+			this->level = level;
+		}
+	}
+};
+
+EqualisationParameters get_equalisation_parameters(const Histogram& previousHistogram,
+                                                   const Histogram& currentHistogram) {
+	EqualisationBand previousShadows{ .25f }, currentShadows{ .25f };
+	EqualisationBand previousMidpoint{ .5f }, currentMidpoint{ .5f };
+	EqualisationBand previousHighlights{ .75f }, currentHighlights{ .75f };
+
+	double cumulativePreviousProportion = 0.0;
+	double cumulativeCurrentProportion = 0.0;
+
+	for (size_t i = 0; i < histogramSegments; i++) {
+		const float currentLevel = static_cast<float>(i) / static_cast<float>(histogramSegments);
+		cumulativePreviousProportion += previousHistogram[i];
+		cumulativeCurrentProportion += currentHistogram[i];
+
+		previousShadows.assignBestProportion(cumulativePreviousProportion, currentLevel);
+		previousMidpoint.assignBestProportion(cumulativePreviousProportion, currentLevel);
+		previousHighlights.assignBestProportion(cumulativePreviousProportion, currentLevel);
+
+		currentShadows.assignBestProportion(cumulativeCurrentProportion, currentLevel);
+		currentMidpoint.assignBestProportion(cumulativeCurrentProportion, currentLevel);
+		currentHighlights.assignBestProportion(cumulativeCurrentProportion, currentLevel);
+	}
+
+	EqualisationParameters eqParams{
+		(previousShadows.level - currentShadows.level) * QuantumRange,
+		(previousMidpoint.level - currentMidpoint.level) * QuantumRange,
+		(previousHighlights.level - currentHighlights.level) * QuantumRange,
+	};
+
+	return eqParams;
+}
+
 constexpr Magick::Quantum lerp(Magick::Quantum a, Magick::Quantum b, Magick::Quantum t) noexcept {
 	return a + t * (b - a);
 }
 
 Magick::Quantum linear_map(Magick::Quantum value, const Magick::Quantum shadowOffset,
                            const Magick::Quantum midOffset, const Magick::Quantum highlightOffset) {
-	const Magick::Quantum input_midpoint = QuantumRange / 2;
+	const Magick::Quantum midpoint = QuantumRange / 2;
+	const Magick::Quantum lower_tail = QuantumRange * 0.25;
+	const Magick::Quantum upper_tail = QuantumRange - lower_tail;
 
-	if (value < input_midpoint) {
-		return value + lerp(shadowOffset, midOffset, value / input_midpoint);
+	if (value < lower_tail) {
+		return value;
+	} else if (value < midpoint) {
+		return value + lerp(shadowOffset, midOffset, (value - lower_tail) / (midpoint - lower_tail));
+	} else if (value < upper_tail) {
+		return value + lerp(midOffset, highlightOffset, (value - midpoint) / (upper_tail - midpoint));
 	} else {
-		return value + lerp(midOffset, highlightOffset, (value - input_midpoint) / input_midpoint);
+		return value;
 	}
 }
 
@@ -92,20 +155,21 @@ std::vector<std::uint8_t> image_equalise(const std::string& filename, const floa
 
 	image.modifyImage();
 
-	Magick::Pixels view{ image };
+	Magick::Quantum* pixels = image.getPixels(0, 0, image.columns(), image.rows());
 
-	Magick::Quantum* pixels = view.get(0, 0, view.columns(), view.rows());
-
-	for (ssize_t row = 0; row < view.rows(); row++) {
-		*pixels = linear_map(*pixels, shadowOffset, midOffset, highlightOffset);
-		pixels += 3; // Move forward by the three channels in image
+	for (size_t row = 0; row < image.rows(); row++) {
+		for (size_t col = 0; col < image.columns(); col++) {
+			*pixels = linear_map(*pixels, shadowOffset, midOffset, highlightOffset);
+			pixels += 3; // Move forward by the three channels in image
+		}
 	}
 
-	view.sync();
+	image.syncPixels();
 
 	Magick::Blob blob{};
 
 	image.magick("TIFF");
+	image.colorSpace(Magick::sRGBColorspace);
 	image.write(&blob);
 
 	const auto blob_data = static_cast<const std::uint8_t*>(blob.data());

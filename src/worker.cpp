@@ -47,9 +47,6 @@ void ServerConnection::connect(zmqpp::context& context) {
 		ConnectingWorkerCommandVisitor visitor{ this->currentState };
 		work_socket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
 
-		work_socket->set(zmqpp::socket_option::receive_high_water_mark, 1);
-		work_socket->set(zmqpp::socket_option::conflate, true);
-
 		const auto& endpoint = this->work_endpoint();
 		std::clog << "Worker connecting to " << endpoint << "\n";
 		work_socket->connect(this->work_endpoint());
