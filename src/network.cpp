@@ -1,10 +1,4 @@
 #include "network.hpp"
-#include "config.hpp"
-
-#include <iostream>
-#include <set>
-
-#include <netinet/in.h>
 
 #include <avahi-client/client.h>
 #include <avahi-client/lookup.h>
@@ -15,12 +9,23 @@
 #include <avahi-common/error.h>
 #include <avahi-common/malloc.h>
 #include <avahi-common/simple-watch.h>
+#include <avahi-common/strlst.h>
+#include <cassert>
+#include <cstdint>
+#include <cxxabi.h>
+#include <iostream>
+#include <netinet/in.h>
+#include <string>
+#include <system_error>
 
-static AvahiSimplePoll* simple_poll{};
+#include "config.hpp"
+#include "worker.hpp"
+
+static AvahiSimplePoll* simplePoll{};
 static AvahiEntryGroup* group{};
 static char* name{};
 
-struct MDNS_Context {
+struct MdnsContext {
 	AvahiClient* client;
 	Worker& worker;
 };
@@ -28,7 +33,7 @@ struct MDNS_Context {
 // Server-related functions
 void create_avahi_services(AvahiClient* c);
 void avahi_server_callback(AvahiClient* c, AvahiClientState state, void* userdata);
-void avahi_entry_group_callback(AvahiEntryGroup* g, AvahiEntryGroupState state, void*);
+void avahi_entry_group_callback(AvahiEntryGroup* g, AvahiEntryGroupState state, void* /*unused*/);
 
 // Client-related functions
 void avahi_client_callback(AvahiClient* c, AvahiClientState state, void* userdata);
@@ -36,18 +41,19 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
                                   AvahiProtocol protocol, AvahiBrowserEvent event, const char* name,
                                   const char* type, const char* domain,
                                   AvahiLookupResultFlags flags, void* userdata);
-void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex, AvahiProtocol,
-                                   AvahiResolverEvent event, const char* name, const char* type,
-                                   const char* domain, const char* host_name,
-                                   const AvahiAddress* address, uint16_t port, AvahiStringList* txt,
-                                   AvahiLookupResultFlags flags, void* userdata);
+void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex /*interface*/,
+                                   AvahiProtocol /*ipVersion*/, AvahiResolverEvent event,
+                                   const char* name, const char* type, const char* domain,
+                                   const char* hostName, const AvahiAddress* address, uint16_t port,
+                                   AvahiStringList* txt, AvahiLookupResultFlags flags,
+                                   void* userdata);
 
-static char service_name[] = "_image_histogram._tcp";
+static char serviceName[] = "_image_histogram._tcp";
 
 std::future<void> start_mdns_service() {
 	AvahiClient* client{};
 
-	if (!(simple_poll = avahi_simple_poll_new())) {
+	if ((simplePoll = avahi_simple_poll_new()) == nullptr) {
 		std::cerr << "Failed to create Avahi simple server poll object.\n";
 		return {};
 	}
@@ -56,38 +62,38 @@ std::future<void> start_mdns_service() {
 
 	int error;
 	client =
-	    avahi_client_new(avahi_simple_poll_get(simple_poll), AvahiClientFlags::AVAHI_CLIENT_NO_FAIL,
+	    avahi_client_new(avahi_simple_poll_get(simplePoll), AvahiClientFlags::AVAHI_CLIENT_NO_FAIL,
 	                     avahi_server_callback, nullptr, &error);
 
-	if (!client) {
+	if (client == nullptr) {
 		std::cerr << "Failed to create Avahi client object: " << avahi_strerror(error) << ".\n";
 		return {};
 	}
 
-	const auto run_mdns_service = [client]() {
-		avahi_simple_poll_loop(simple_poll);
+	const auto runMdnsService = [client]() {
+		avahi_simple_poll_loop(simplePoll);
 
-		if (client) {
+		if (client != nullptr) {
 			avahi_client_free(client);
 		}
 
-		if (simple_poll) {
-			avahi_simple_poll_free(simple_poll);
+		if (simplePoll != nullptr) {
+			avahi_simple_poll_free(simplePoll);
 		}
 
 		avahi_free(name);
 	};
 
-	return std::async(std::launch::async, run_mdns_service);
+	return std::async(std::launch::async, runMdnsService);
 }
 
-void stop_mdns_service(std::future<void> mdns_service) {
-	avahi_simple_poll_quit(simple_poll);
+void stop_mdns_service(std::future<void> mdnsService) {
+	avahi_simple_poll_quit(simplePoll);
 
-	mdns_service.wait();
+	mdnsService.wait();
 }
 
-void avahi_server_callback(AvahiClient* c, AvahiClientState state, void*) {
+void avahi_server_callback(AvahiClient* c, AvahiClientState state, void* /*unused*/) {
 	assert(c);
 
 	switch (state) {
@@ -95,7 +101,7 @@ void avahi_server_callback(AvahiClient* c, AvahiClientState state, void*) {
 			return create_avahi_services(c);
 		case AVAHI_CLIENT_FAILURE:
 			std::cerr << "Avahi client failure: " << avahi_strerror(avahi_client_errno(c)) << "\n";
-			avahi_simple_poll_quit(simple_poll);
+			avahi_simple_poll_quit(simplePoll);
 			return;
 		case AVAHI_CLIENT_S_COLLISION:
 			/* Let's drop our registered services. When the server is back
@@ -106,16 +112,17 @@ void avahi_server_callback(AvahiClient* c, AvahiClientState state, void*) {
 			 * might be caused by a host name change. We need to wait
 			 * for our own records to register until the host name is
 			 * properly esatblished. */
-			if (group)
+			if (group != nullptr) {
 				avahi_entry_group_reset(group);
+			}
 			break;
 		case AVAHI_CLIENT_CONNECTING:;
 	}
 }
 
 void create_avahi_services(AvahiClient* c) {
-	if (!group) {
-		if (!(group = avahi_entry_group_new(c, avahi_entry_group_callback, nullptr))) {
+	if (group == nullptr) {
+		if ((group = avahi_entry_group_new(c, avahi_entry_group_callback, nullptr)) == nullptr) {
 			std::cerr << "Failed to create Avahi entry group: " << avahi_strerror(avahi_client_errno(c))
 			          << "\n";
 			return;
@@ -124,11 +131,11 @@ void create_avahi_services(AvahiClient* c) {
 
 	int error = 0;
 
-	if (avahi_entry_group_is_empty(group)) {
-		if ((error =
-		         avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
-		                                       AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name,
-		                                       service_name, nullptr, nullptr, WORK_PORT, nullptr))) {
+	if (avahi_entry_group_is_empty(group) != 0) {
+		if ((error = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+		                                           AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name,
+		                                           serviceName, nullptr, nullptr, WORK_PORT,
+		                                           nullptr)) != 0) {
 			std::cerr << "Failed to register Avahi service with entry group: " << avahi_strerror(error)
 			          << "\n";
 			return;
@@ -141,7 +148,7 @@ void create_avahi_services(AvahiClient* c) {
 	}
 }
 
-void avahi_entry_group_callback(AvahiEntryGroup* g, AvahiEntryGroupState state, void*) {
+void avahi_entry_group_callback(AvahiEntryGroup* g, AvahiEntryGroupState state, void* /*unused*/) {
 	assert(g == group || !group);
 	group = g;
 
@@ -160,7 +167,7 @@ void avahi_entry_group_callback(AvahiEntryGroup* g, AvahiEntryGroupState state, 
 		case AVAHI_ENTRY_GROUP_FAILURE:
 			std::cerr << "Entry group failure: "
 			          << avahi_strerror(avahi_client_errno(avahi_entry_group_get_client(g))) << "\n";
-			avahi_simple_poll_quit(simple_poll);
+			avahi_simple_poll_quit(simplePoll);
 			break;
 		case AVAHI_ENTRY_GROUP_UNCOMMITED:
 		case AVAHI_ENTRY_GROUP_REGISTERING:;
@@ -173,22 +180,22 @@ void avahi_client_callback(AvahiClient* c, AvahiClientState state, void* userdat
 	/* Called whenever the client or server state changes */
 	if (state == AVAHI_CLIENT_FAILURE) {
 		std::cerr << "Server connection failure: " << avahi_strerror(avahi_client_errno(c)) << "\n";
-		avahi_simple_poll_quit(simple_poll);
+		avahi_simple_poll_quit(simplePoll);
 	}
 }
 
 void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interface,
-                                   AvahiProtocol ip_version, AvahiResolverEvent event,
+                                   AvahiProtocol ipVersion, AvahiResolverEvent event,
                                    const char* name, const char* type, const char* domain,
-                                   const char* host_name, const AvahiAddress* address,
-                                   uint16_t port, AvahiStringList* txt,
-                                   AvahiLookupResultFlags flags, void* userdata) {
+                                   const char* hostName, const AvahiAddress* address, uint16_t port,
+                                   AvahiStringList* txt, AvahiLookupResultFlags flags,
+                                   void* userdata) {
 	using namespace std::string_literals;
 
 	assert(r);
 	assert(userdata);
 
-	MDNS_Context* context = static_cast<MDNS_Context*>(userdata);
+	auto* context = static_cast<MdnsContext*>(userdata);
 
 	/* Called whenever a service has been resolved successfully or timed out */
 	switch (event) {
@@ -199,7 +206,8 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 			          << "\n";
 			break;
 		case AVAHI_RESOLVER_FOUND: {
-			char a[AVAHI_ADDRESS_STR_MAX], *t;
+			char a[AVAHI_ADDRESS_STR_MAX];
+			char* t;
 #if DEBUG_SERVICE_DISCOVERY
 			std::clog << "Service '" << name << "' of type '" << type << "' in domain '" << domain
 			          << " on IP version " << ip_version << "': "
@@ -224,14 +232,14 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 #endif
 			avahi_free(t);
 
-			if (ip_version == AVAHI_PROTO_INET6 &&
+			if (ipVersion == AVAHI_PROTO_INET6 &&
 			    (IN6_IS_ADDR_LINKLOCAL(address->data.data) || IN6_IS_ADDR_LOOPBACK(address->data.data))) {
 				// Specify interface if needing to connect to a remote on a link-local IPv6 address
-				context->worker.addServer(name, a + "%"s + std::to_string(interface), port);
+				context->worker.add_server(name, a + "%"s + std::to_string(interface), port);
 			} else {
-				context->worker.addServer(name, a, port);
+				context->worker.add_server(name, a, port);
 			}
-			avahi_simple_poll_quit(simple_poll);
+			avahi_simple_poll_quit(simplePoll);
 		}
 	}
 	avahi_service_resolver_free(r);
@@ -243,14 +251,14 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
                                   AvahiLookupResultFlags flags, void* userdata) {
 	assert(b);
 	assert(userdata);
-	MDNS_Context* context = static_cast<MDNS_Context*>(userdata);
+	auto* context = static_cast<MdnsContext*>(userdata);
 
 	/* Called whenever a new services becomes available on the LAN or is removed from the LAN */
 	switch (event) {
 		case AVAHI_BROWSER_FAILURE:
 			std::cerr << "(Browser) "
 			          << avahi_strerror(avahi_client_errno(avahi_service_browser_get_client(b))) << "\n";
-			avahi_simple_poll_quit(simple_poll);
+			avahi_simple_poll_quit(simplePoll);
 			return;
 		case AVAHI_BROWSER_NEW:
 #if DEBUG_SERVICE_DISCOVERY
@@ -261,11 +269,12 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
 			   function we free it. If the server is terminated before
 			   the callback function is called the server will free
 			   the resolver for us. */
-			if (!(avahi_service_resolver_new(context->client, interface, protocol, name, type, domain,
-			                                 AVAHI_PROTO_UNSPEC, static_cast<AvahiLookupFlags>(0),
-			                                 avahi_client_resolve_callback, context)))
+			if ((avahi_service_resolver_new(context->client, interface, protocol, name, type, domain,
+			                                AVAHI_PROTO_UNSPEC, static_cast<AvahiLookupFlags>(0),
+			                                avahi_client_resolve_callback, context)) == nullptr) {
 				std::clog << "Failed to resolve service '" << name
 				          << "': " << avahi_strerror(avahi_client_errno(context->client)) << "\n";
+			}
 			break;
 		case AVAHI_BROWSER_REMOVE:
 #if DEBUG_SERVICE_DISCOVERY
@@ -273,6 +282,7 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
 			          << domain << "'\n";
 #endif
 			break;
+			[[fallthrough]];
 		case AVAHI_BROWSER_ALL_FOR_NOW:
 		case AVAHI_BROWSER_CACHE_EXHAUSTED:
 #if DEBUG_SERVICE_DISCOVERY
@@ -286,9 +296,9 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
 
 void mdns_find_server(Worker& worker) {
 	AvahiClient* client{};
-	AvahiServiceBrowser* service_browser{};
+	AvahiServiceBrowser* serviceBrowser{};
 
-	if (!(simple_poll = avahi_simple_poll_new())) {
+	if ((simplePoll = avahi_simple_poll_new()) == nullptr) {
 		std::cerr << "Failed to create Avahi simple client poll object.\n";
 		return;
 	}
@@ -297,35 +307,35 @@ void mdns_find_server(Worker& worker) {
 
 	int error;
 	client =
-	    avahi_client_new(avahi_simple_poll_get(simple_poll), AvahiClientFlags::AVAHI_CLIENT_NO_FAIL,
+	    avahi_client_new(avahi_simple_poll_get(simplePoll), AvahiClientFlags::AVAHI_CLIENT_NO_FAIL,
 	                     avahi_client_callback, nullptr, &error);
 
-	if (!client) {
+	if (client == nullptr) {
 		std::cerr << "Failed to create Avahi client object: " << avahi_strerror(error) << ".\n";
 		return;
 	}
 
-	MDNS_Context context{
+	MdnsContext context{
 		client,
 		worker,
 	};
 
-	if (!(service_browser = avahi_service_browser_new(
-	          client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, service_name, nullptr,
-	          static_cast<AvahiLookupFlags>(0), avahi_client_browse_callback, &context))) {
+	if ((serviceBrowser = avahi_service_browser_new(
+	         client, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, serviceName, nullptr,
+	         static_cast<AvahiLookupFlags>(0), avahi_client_browse_callback, &context)) == nullptr) {
 		std::cerr << "Failed to create service browser: " << avahi_strerror(avahi_client_errno(client))
 		          << "\n";
 		return;
 	}
 
-	avahi_simple_poll_loop(simple_poll);
+	avahi_simple_poll_loop(simplePoll);
 
-	if (client) {
+	if (client != nullptr) {
 		avahi_client_free(client);
 	}
 
-	if (simple_poll) {
-		avahi_simple_poll_free(simple_poll);
+	if (simplePoll != nullptr) {
+		avahi_simple_poll_free(simplePoll);
 	}
 
 	avahi_free(name);

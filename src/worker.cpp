@@ -1,12 +1,16 @@
 #include "worker.hpp"
-#include <cassert>
-#include <utility>
 
-#include "algorithm.hpp"
+#include <cassert>
+#include <ostream>
+#include <utility>
+#include <zmqpp/context.hpp>
+#include <zmqpp/socket.hpp>
+#include <zmqpp/socket_types.hpp>
+
 #include "protocol.hpp"
 
 ServerDetails::ServerDetails(std::string name, std::string address, std::uint16_t port)
-    : name{ name }, address{ address }, port{ port } {}
+    : name{ std::move(name) }, address{ std::move(address) }, port{ port } {}
 
 bool ServerDetails::operator==(const ServerDetails& other) const noexcept {
 	return this->name == other.name && this->address == other.address && this->port == other.port;
@@ -16,7 +20,7 @@ bool ServerDetails::operator<(const ServerDetails& other) const noexcept {
 	return this->name < other.name || this->address < other.address;
 }
 
-ServerConnection::ServerConnection(const std::string name, const std::string address,
+ServerConnection::ServerConnection(const std::string& name, const std::string& address,
                                    const uint16_t port)
     : serverDetails{ name, address, port }, work_socket{}, currentState{
 	      ServerConnection::State::Unconnected
@@ -24,13 +28,13 @@ ServerConnection::ServerConnection(const std::string name, const std::string add
 	assert(address.length() == 4 || address.length() == 16);
 }
 
-ServerConnection::ServerConnection(const ServerDetails serverDetails)
-    : serverDetails{ serverDetails }, work_socket{}, currentState{
+ServerConnection::ServerConnection(ServerDetails serverDetails)
+    : serverDetails{ std::move(serverDetails) }, work_socket{}, currentState{
 	      ServerConnection::State::Unconnected
       } {}
 
-ServerConnection::ServerConnection(ServerConnection&& other)
-    : serverDetails{ other.serverDetails }, work_socket{ std::move(other.work_socket) },
+ServerConnection::ServerConnection(ServerConnection&& other) noexcept
+    : serverDetails{ std::move(other.serverDetails) }, work_socket{ std::move(other.work_socket) },
       currentState{ other.currentState } {}
 
 ServerConnection::~ServerConnection() {
@@ -52,12 +56,12 @@ void ServerConnection::connect(zmqpp::context& context) {
 		work_socket->connect(this->work_endpoint());
 
 		const auto heloCommand = WorkerHeloCommand{};
-		auto heloMessage = heloCommand.toMessage();
+		auto heloMessage = heloCommand.to_message();
 		work_socket->send(heloMessage);
 
 		std::string returnMessage{};
 		work_socket->receive(returnMessage);
-		const auto command = WorkerCommand::fromSerialisedString(returnMessage);
+		const auto command = WorkerCommand::from_serialised_string(returnMessage);
 		command->visit(visitor);
 
 		assert(this->currentState == ServerConnection::State::Connected);
@@ -70,7 +74,7 @@ void ServerConnection::disconnect() {
 	{
 		std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
 		previousState = this->currentState;
-		this->currentState = transitionState(ServerConnection::State::Dying);
+		this->currentState = transition_state(ServerConnection::State::Dying);
 	}
 
 	if (previousState != ServerConnection::State::Unconnected) {
@@ -102,7 +106,7 @@ void ServerConnection::run() {
 		work_socket->receive(message);
 		RunningWorkerCommandVisitor commandVisitor{ *this->work_socket };
 
-		WorkerCommand::fromSerialisedString(message)->visit(commandVisitor);
+		WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
 	}
 
 	std::unique_lock<std::mutex> lock{ this->running_mutex };
@@ -114,12 +118,13 @@ ServerConnection::State ServerConnection::state() const {
 	return this->currentState;
 }
 
-ServerConnection::State ServerConnection::transitionState(ServerConnection::State nextState) const {
-	return ServerConnection::transitionState(this->currentState, nextState);
+ServerConnection::State
+ServerConnection::transition_state(ServerConnection::State nextState) const {
+	return ServerConnection::transition_state(this->currentState, nextState);
 }
 
-ServerConnection::State ServerConnection::transitionState(ServerConnection::State currentState,
-                                                          ServerConnection::State nextState) {
+ServerConnection::State ServerConnection::transition_state(ServerConnection::State currentState,
+                                                           ServerConnection::State nextState) {
 	switch (currentState) {
 		case ServerConnection::State::Unconnected:
 			return nextState;
@@ -141,10 +146,10 @@ zmqpp::endpoint_t ServerConnection::work_endpoint() const {
 	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port);
 }
 
-Worker::Worker() : connections{}, connectionsMutex{} {}
+Worker::Worker() = default;
 
-void Worker::addServer(const std::string name, const std::string address, const uint16_t port) {
-	assert(name != "");
+void Worker::add_server(const std::string& name, const std::string& address, const uint16_t port) {
+	assert(!name.empty());
 
 	std::lock_guard<std::recursive_mutex> connectionsLock{ connectionsMutex };
 	ServerDetails details{ name, address, port };
@@ -153,7 +158,8 @@ void Worker::addServer(const std::string name, const std::string address, const 
 	connections.insert(std::pair<ServerDetails, ServerConnection>(details, std::move(connection)));
 }
 
-void Worker::removeServer(const std::string name, const std::string address, const uint16_t port) {
+void Worker::remove_server(const std::string& name, const std::string& address,
+                           const uint16_t port) {
 	assert(!connections.empty());
 
 	const ServerDetails details{ name, address, port };
@@ -163,15 +169,15 @@ void Worker::removeServer(const std::string name, const std::string address, con
 	connections.erase(connection);
 }
 
-bool Worker::hasJobs() const {
+bool Worker::has_jobs() const {
 	std::unique_lock<std::recursive_mutex> lock{ this->connectionsMutex };
-	return connections.size();
+	return !connections.empty();
 }
 
-std::optional<ServerConnection> Worker::popConnection() {
+std::optional<ServerConnection> Worker::pop_connection() {
 	std::unique_lock lock{ this->connectionsMutex };
 
-	if (this->hasJobs()) {
+	if (this->has_jobs()) {
 		auto connectionIter = connections.begin();
 		ServerConnection connection = std::move(connectionIter->second);
 		connections.erase(connectionIter);
@@ -181,8 +187,8 @@ std::optional<ServerConnection> Worker::popConnection() {
 	return std::nullopt;
 }
 
-void Worker::runJobs(zmqpp::context context) {
-	while (auto connection = this->popConnection()) {
+void Worker::run_jobs(zmqpp::context context) {
+	while (auto connection = this->pop_connection()) {
 		connection->connect(context);
 		connection->run();
 	}

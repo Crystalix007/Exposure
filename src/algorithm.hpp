@@ -1,14 +1,15 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include "config.hpp"
 
-using Histogram = std::array<float, histogramSegments>;
-using EqualisationHistogramMapping = std::array<uint32_t, histogramSegments>;
+using Histogram = std::array<float, HISTOGRAM_SEGMENTS>;
+using EqualisationHistogramMapping = std::array<uint32_t, HISTOGRAM_SEGMENTS>;
 
 std::optional<Histogram> image_get_histogram(const std::string& filename);
 EqualisationHistogramMapping identity_equalisation_histogram_mapping();

@@ -1,28 +1,29 @@
 #include "algorithm.hpp"
-#include "MagickCore/magick-config.h"
-
-#include <cmath>
-#include <iostream>
-#include <numeric>
 
 #include <Magick++.h>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <numeric>
+#include <stdexcept>
 
-Magick::Image get_lightness_channel(const std::string filename);
-Histogram compute_lightness_histogram(const Magick::Image& lightness_channel);
+Magick::Image get_lightness_channel(const std::string& filename);
+Histogram compute_lightness_histogram(const Magick::Image& lightnessChannel);
 
 std::optional<Histogram> image_get_histogram(const std::string& filename) {
-	Magick::Image lightness_channel{};
+	Magick::Image lightnessChannel{};
 
 	try {
-		lightness_channel = get_lightness_channel(filename);
+		lightnessChannel = get_lightness_channel(filename);
 	} catch (Magick::Exception& error) {
 		return std::nullopt;
 	}
 
-	return compute_lightness_histogram(lightness_channel);
+	return compute_lightness_histogram(lightnessChannel);
 }
 
-Magick::Image get_lightness_channel(const std::string filename) {
+Magick::Image get_lightness_channel(const std::string& filename) {
 	Magick::Image image{};
 
 	try {
@@ -38,29 +39,29 @@ Magick::Image get_lightness_channel(const std::string filename) {
 	return image;
 }
 
-std::array<float, histogramSegments>
-compute_lightness_histogram(const Magick::Image& lightness_channel) {
+std::array<float, HISTOGRAM_SEGMENTS>
+compute_lightness_histogram(const Magick::Image& lightnessChannel) {
 	const Magick::Quantum* pixels =
-	    lightness_channel.getConstPixels(0, 0, lightness_channel.columns(), lightness_channel.rows());
-	std::array<uint64_t, histogramSegments> histogram{};
+	    lightnessChannel.getConstPixels(0, 0, lightnessChannel.columns(), lightnessChannel.rows());
+	std::array<uint64_t, HISTOGRAM_SEGMENTS> histogram{};
 
-	for (size_t y = 0; y < lightness_channel.rows(); y++) {
-		for (size_t x = 0; x < lightness_channel.columns(); x++) {
-			const float pixel = pixels[x + y * lightness_channel.columns()] / QuantumRange;
-			const float bucket = std::round(pixel * (histogramSegments - 1));
+	for (size_t y = 0; y < lightnessChannel.rows(); y++) {
+		for (size_t x = 0; x < lightnessChannel.columns(); x++) {
+			const float pixel = pixels[x + y * lightnessChannel.columns()] / QuantumRange;
+			const float bucket = std::round(pixel * (HISTOGRAM_SEGMENTS - 1));
 			histogram[static_cast<uint32_t>(bucket)]++;
 		}
 	}
 
-	std::array<float, histogramSegments> proportional_histogram{};
-	const double pixel_count =
-	    static_cast<uint64_t>(lightness_channel.rows()) * lightness_channel.columns();
+	std::array<float, HISTOGRAM_SEGMENTS> proportionalHistogram{};
+	const double pixelCount =
+	    static_cast<double>(lightnessChannel.rows()) * lightnessChannel.columns();
 
-	for (size_t i = 0; i < histogramSegments; i++) {
-		proportional_histogram[i] = histogram[i] / pixel_count;
+	for (size_t i = 0; i < HISTOGRAM_SEGMENTS; i++) {
+		proportionalHistogram[i] = histogram[i] / pixelCount;
 	}
 
-	return proportional_histogram;
+	return proportionalHistogram;
 }
 
 struct EqualisationBand {
@@ -69,19 +70,19 @@ struct EqualisationBand {
 	const float targetProportionLess;
 
 	EqualisationBand(const float targetProportion)
-	    : level{ 0.f }, cumulativeProportionLess{ 0.f }, targetProportionLess{ targetProportion } {}
+	    : level{ 0.F }, cumulativeProportionLess{ 0.F }, targetProportionLess{ targetProportion } {}
 
-	float operator-(const EqualisationBand& other) {
+	float operator-(const EqualisationBand& other) const {
 		return this->level - other.level;
 	}
 
-	bool isNewProportionCloser(const float newProportion) {
+	[[nodiscard]] bool is_new_proportion_closer(const float newProportion) const {
 		return abs(cumulativeProportionLess - targetProportionLess) >
 		       abs(newProportion - targetProportionLess);
 	}
 
-	void assignBestProportion(const float newProportionLess, const float level) {
-		if (this->isNewProportionCloser(newProportionLess)) {
+	void assign_best_proportion(const float newProportionLess, const float level) {
+		if (this->is_new_proportion_closer(newProportionLess)) {
 			this->cumulativeProportionLess = newProportionLess;
 			this->level = level;
 		}
@@ -96,7 +97,8 @@ EqualisationHistogramMapping identity_equalisation_histogram_mapping() {
 
 EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previousHistogram,
                                                          const Histogram& currentHistogram) {
-	double cumulativePreviousHistogram = 0.0, cumulativeCurrentHistogram = 0.0;
+	double cumulativePreviousHistogram = 0.0;
+	double cumulativeCurrentHistogram = 0.0;
 	uint32_t previousHistogramBin = 0;
 
 	EqualisationHistogramMapping mapping{};
@@ -144,12 +146,12 @@ constexpr Magick::Quantum lerp(Magick::Quantum a, Magick::Quantum b, Magick::Qua
 }
 
 Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMapping& mapping) {
-	const uint32_t histogram_bin =
+	const uint32_t histogramBin =
 	    static_cast<size_t>(round((static_cast<double>(value) / static_cast<double>(QuantumRange)) *
 	                              static_cast<double>(mapping.size() - 1)));
 
 	return static_cast<Magick::Quantum>(
-	    (static_cast<double>(mapping[histogram_bin] * static_cast<double>(QuantumRange)) /
+	    (static_cast<double>(mapping[histogramBin] * static_cast<double>(QuantumRange)) /
 	     static_cast<double>(mapping.size() - 1)));
 }
 
@@ -185,8 +187,8 @@ std::vector<std::uint8_t> image_equalise(const std::string& filename,
 	image.magick("TIFF");
 	image.write(&blob);
 
-	const auto blob_data = static_cast<const std::uint8_t*>(blob.data());
-	const size_t blob_length = blob.length();
+	const auto* const blobData = static_cast<const std::uint8_t*>(blob.data());
+	const size_t blobLength = blob.length();
 
-	return std::vector<std::uint8_t>{ blob_data, blob_data + blob_length };
+	return std::vector<std::uint8_t>{ blobData, blobData + blobLength };
 }

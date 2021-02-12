@@ -1,14 +1,24 @@
 #include "protocol.hpp"
-#include "algorithm.hpp"
 
+#include <algorithm>
+#include <capnp/common.h>
+#include <capnp/list.h>
 #include <capnp/message.h>
 #include <capnp/serialize.h>
-
+#include <cassert>
+#include <cstdint>
 #include <cstring>
+#include <kj/array.h>
+#include <kj/common.h>
 #include <memory>
+#include <optional>
 #include <sstream>
+#include <utility>
+#include <zmqpp/socket.hpp>
 
-std::string encodeHistogramResult(const std::string& filename, const Histogram& histogram) {
+#include "algorithm.hpp"
+
+std::string encode_histogram_result(const std::string& filename, const Histogram& histogram) {
 	capnp::MallocMessageBuilder message{};
 
 	HistogramResult::Builder resultBuilder = message.initRoot<HistogramResult>();
@@ -19,53 +29,53 @@ std::string encodeHistogramResult(const std::string& filename, const Histogram& 
 		serializableHistogram.set(i, histogram[i]);
 	}
 
-	const auto byte_array = capnp::messageToFlatArray(message);
-	const auto char_array = byte_array.asChars();
+	const auto byteArray = capnp::messageToFlatArray(message);
+	const auto charArray = byteArray.asChars();
 
-	return std::string{ char_array.begin(), char_array.end() };
+	return std::string{ charArray.begin(), charArray.end() };
 }
 
-WorkerCommand::WorkerCommand(const std::string_view& command_string)
-    : command_string{ command_string } {}
+WorkerCommand::WorkerCommand(const std::string_view& commandString)
+    : command_string{ commandString } {}
 
-WorkerCommand::~WorkerCommand() {}
+WorkerCommand::~WorkerCommand() = default;
 
-zmqpp::message WorkerCommand::toMessage() const {
+zmqpp::message WorkerCommand::to_message() const {
 	zmqpp::message msg{};
-	this->addToMessage(msg);
+	this->add_to_message(msg);
 	return msg;
 }
 
-zmqpp::message& WorkerCommand::addToMessage(zmqpp::message& msg) const {
+zmqpp::message& WorkerCommand::add_to_message(zmqpp::message& msg) const {
 	capnp::MallocMessageBuilder message{};
-	ProtocolCommand::Builder command_builder = message.initRoot<ProtocolCommand>();
+	ProtocolCommand::Builder commandBuilder = message.initRoot<ProtocolCommand>();
 
-	command_builder.setCommand(command_string);
-	auto data_builder = command_builder.initData();
+	commandBuilder.setCommand(command_string);
+	auto dataBuilder = commandBuilder.initData();
 
-	this->commandData(data_builder);
+	this->command_data(dataBuilder);
 
-	const auto message_words = capnp::messageToFlatArray(message);
-	const auto message_chars = message_words.asChars();
+	const auto messageWords = capnp::messageToFlatArray(message);
+	const auto messageChars = messageWords.asChars();
 
-	msg.add(std::string{ message_chars.begin(), message_chars.end() });
+	msg.add(std::string{ messageChars.begin(), messageChars.end() });
 
 	return msg;
 }
 
 std::unique_ptr<WorkerCommand>
-WorkerCommand::fromSerialisedString(const std::string& serialised_string) {
-	const size_t word_count = serialised_string.size() / sizeof(capnp::word) * sizeof(char);
-	std::unique_ptr<capnp::word[]> word_array{ new capnp::word[word_count] };
-	std::memcpy(word_array.get(), serialised_string.c_str(), serialised_string.size() * sizeof(char));
-	const kj::ArrayPtr<capnp::word> word_array_ptr{ word_array.get(), word_count };
+WorkerCommand::from_serialised_string(const std::string& serialisedString) {
+	const size_t wordCount = serialisedString.size() / sizeof(capnp::word) * sizeof(char);
+	std::vector<capnp::word> wordArray(wordCount);
+	std::memcpy(wordArray.data(), serialisedString.c_str(), serialisedString.size() * sizeof(char));
+	const kj::ArrayPtr<capnp::word> wordArrayPtr{ wordArray.data(), wordCount };
 	capnp::ReaderOptions commandReaderOptions{};
 	// Raise message size limit to 4GB (somewhat reasonable per tiff image)
-	commandReaderOptions.traversalLimitInWords = 4ull * 1024ull * 1024ull * 1024ull;
+	commandReaderOptions.traversalLimitInWords = MAX_MESSAGE_SIZE;
 
-	capnp::FlatArrayMessageReader message_reader{ word_array_ptr, commandReaderOptions };
+	capnp::FlatArrayMessageReader messageReader{ wordArrayPtr, commandReaderOptions };
 
-	const auto commandReader = message_reader.getRoot<ProtocolCommand>();
+	const auto commandReader = messageReader.getRoot<ProtocolCommand>();
 
 	const std::string command{ commandReader.getCommand() };
 	const auto data = commandReader.getData();
@@ -73,19 +83,19 @@ WorkerCommand::fromSerialisedString(const std::string& serialised_string) {
 	switch (data.which()) {
 		case ProtocolCommand::Data::HELO:
 			assert(command == "HELO");
-			return WorkerHeloCommand::fromData();
+			return WorkerHeloCommand::from_data();
 		case ProtocolCommand::Data::EHLO:
 			assert(command == "EHLO");
-			return WorkerEhloCommand::fromData();
+			return WorkerEhloCommand::from_data();
 		case ProtocolCommand::Data::JOB:
 			assert(command == "JOB");
-			return WorkerJobCommand::fromData(data.getJob());
+			return WorkerJobCommand::from_data(data.getJob());
 		case ProtocolCommand::Data::RESULT:
 			assert(command == "RESULT");
-			return WorkerResultCommand::fromData(data.getResult());
+			return WorkerResultCommand::from_data(data.getResult());
 		case ProtocolCommand::Data::HEATBEAT:
 			assert(command == "HEARTBEAT");
-			return WorkerHeartbeatCommand::fromData(data.getHeatbeat());
+			return WorkerHeartbeatCommand::from_data(data.getHeatbeat());
 		default:
 			std::clog << "Invalid command detected\n";
 			return nullptr;
@@ -94,54 +104,54 @@ WorkerCommand::fromSerialisedString(const std::string& serialised_string) {
 
 WorkerHeloCommand::WorkerHeloCommand() : WorkerCommand{ "HELO" } {}
 
-std::unique_ptr<WorkerHeloCommand> WorkerHeloCommand::fromData() {
+std::unique_ptr<WorkerHeloCommand> WorkerHeloCommand::from_data() {
 	return std::make_unique<WorkerHeloCommand>();
 }
 
-void WorkerHeloCommand::commandData(ProtocolCommand::Data::Builder& data_builder) const {
-	data_builder.setHelo();
+void WorkerHeloCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	dataBuilder.setHelo();
 }
 
 void WorkerHeloCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitHelo(*this);
+	return visitor.visit_helo(*this);
 }
 
 WorkerEhloCommand::WorkerEhloCommand() : WorkerCommand{ "EHLO" } {}
 
-std::unique_ptr<WorkerEhloCommand> WorkerEhloCommand::fromData() {
+std::unique_ptr<WorkerEhloCommand> WorkerEhloCommand::from_data() {
 	return std::make_unique<WorkerEhloCommand>();
 }
 
-void WorkerEhloCommand::commandData(ProtocolCommand::Data::Builder& data_builder) const {
-	data_builder.setEhlo();
+void WorkerEhloCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	dataBuilder.setEhlo();
 }
 
 void WorkerEhloCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitEhlo(*this);
+	return visitor.visit_ehlo(*this);
 }
 
-WorkerJobCommand::WorkerJobCommand(const std::string& job_type)
-    : WorkerCommand{ "JOB" }, job_type{ job_type } {}
+WorkerJobCommand::WorkerJobCommand(std::string jobType)
+    : WorkerCommand{ "JOB" }, job_type{ std::move(jobType) } {}
 
-void WorkerJobCommand::commandData(ProtocolCommand::Data::Builder& data_builder) const {
-	auto job_builder = data_builder.initJob();
-	job_builder.setType(this->job_type);
+void WorkerJobCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	auto jobBuilder = dataBuilder.initJob();
+	jobBuilder.setType(this->job_type);
 
-	auto job_data_builder = job_builder.initData();
-	this->commandData(job_data_builder);
+	auto jobDataBuilder = jobBuilder.initData();
+	this->command_data(jobDataBuilder);
 }
 
-std::unique_ptr<WorkerJobCommand> WorkerJobCommand::fromData(const ProtocolJob::Reader reader) {
-	const std::string decoded_type{ reader.getType() };
+std::unique_ptr<WorkerJobCommand> WorkerJobCommand::from_data(const ProtocolJob::Reader reader) {
+	const std::string decodedType{ reader.getType() };
 	const auto data = reader.getData();
 
 	switch (data.which()) {
 		case ProtocolJob::Data::HISTOGRAM:
-			assert(decoded_type == "HISTOGRAM");
-			return WorkerHistogramJobCommand::fromData(data.getHistogram());
+			assert(decodedType == "HISTOGRAM");
+			return WorkerHistogramJobCommand::from_data(data.getHistogram());
 		case ProtocolJob::Data::EQUALISATION:
-			assert(decoded_type == "EQUALISATION");
-			return WorkerEqualisationJobCommand::fromData(data.getEqualisation());
+			assert(decodedType == "EQUALISATION");
+			return WorkerEqualisationJobCommand::from_data(data.getEqualisation());
 		default:
 			return nullptr;
 	}
@@ -155,26 +165,26 @@ bool WorkerJobCommand::operator==(const WorkerResultCommand& other) const {
 	return this->job_type == other.result_type;
 }
 
-WorkerHistogramJobCommand::WorkerHistogramJobCommand(const std::string& filename)
-    : WorkerJobCommand{ "HISTOGRAM" }, filename{ filename } {}
+WorkerHistogramJobCommand::WorkerHistogramJobCommand(std::string filename)
+    : WorkerJobCommand{ "HISTOGRAM" }, filename{ std::move(filename) } {}
 
 std::unique_ptr<WorkerHistogramJobCommand>
-WorkerHistogramJobCommand::fromData(const HistogramJob::Reader reader) {
+WorkerHistogramJobCommand::from_data(const HistogramJob::Reader reader) {
 	const std::string filename{ reader.getFilename() };
 
 	return std::make_unique<WorkerHistogramJobCommand>(filename);
 }
 
-void WorkerHistogramJobCommand::commandData(ProtocolJob::Data::Builder& data_builder) const {
-	data_builder.initHistogram().setFilename(this->filename);
+void WorkerHistogramJobCommand::command_data(ProtocolJob::Data::Builder& dataBuilder) const {
+	dataBuilder.initHistogram().setFilename(this->filename);
 }
 
-std::string WorkerHistogramJobCommand::getFilename() const {
+std::string WorkerHistogramJobCommand::get_filename() const {
 	return this->filename;
 }
 
 void WorkerHistogramJobCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitHistogramJob(*this);
+	return visitor.visit_histogram_job(*this);
 }
 
 bool WorkerHistogramJobCommand::operator==(const WorkerJobCommand& other) const {
@@ -198,13 +208,13 @@ bool WorkerHistogramJobCommand::operator==(const WorkerResultCommand& other) con
 }
 
 WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(
-    const std::string& filename, const EqualisationHistogramMapping& histogramOffsets)
-    : WorkerJobCommand{ "EQUALISATION" }, filename{ filename }, histogramOffsets{
+    std::string filename, const EqualisationHistogramMapping& histogramOffsets)
+    : WorkerJobCommand{ "EQUALISATION" }, filename{ std::move(filename) }, histogramOffsets{
 	      histogramOffsets
       } {}
 
 std::unique_ptr<WorkerEqualisationJobCommand>
-WorkerEqualisationJobCommand::fromData(const EqualisationJob::Reader reader) {
+WorkerEqualisationJobCommand::from_data(const EqualisationJob::Reader reader) {
 	const std::string filename{ reader.getFilename() };
 	const auto messageHistogramOffsets = reader.getHistogramOffsets();
 	EqualisationHistogramMapping mapping{};
@@ -216,27 +226,27 @@ WorkerEqualisationJobCommand::fromData(const EqualisationJob::Reader reader) {
 	return std::make_unique<WorkerEqualisationJobCommand>(filename, mapping);
 }
 
-void WorkerEqualisationJobCommand::commandData(ProtocolJob::Data::Builder& data_builder) const {
-	auto equalisation_job = data_builder.initEqualisation();
+void WorkerEqualisationJobCommand::command_data(ProtocolJob::Data::Builder& dataBuilder) const {
+	auto equalisationJob = dataBuilder.initEqualisation();
 
-	equalisation_job.setFilename(this->filename);
-	auto jobHistogramOffsets = equalisation_job.initHistogramOffsets(this->histogramOffsets.size());
+	equalisationJob.setFilename(this->filename);
+	auto jobHistogramOffsets = equalisationJob.initHistogramOffsets(this->histogramOffsets.size());
 
 	for (size_t i = 0; i < this->histogramOffsets.size(); i++) {
 		jobHistogramOffsets.set(i, this->histogramOffsets[i]);
 	}
 }
 
-std::string WorkerEqualisationJobCommand::getFilename() const {
+std::string WorkerEqualisationJobCommand::get_filename() const {
 	return this->filename;
 }
 
-EqualisationHistogramMapping WorkerEqualisationJobCommand::getHistogramOffsets() const {
+EqualisationHistogramMapping WorkerEqualisationJobCommand::get_histogram_offsets() const {
 	return this->histogramOffsets;
 }
 
 void WorkerEqualisationJobCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitEqualisationJob(*this);
+	return visitor.visit_equalisation_job(*this);
 }
 
 bool WorkerEqualisationJobCommand::operator==(const WorkerJobCommand& other) const {
@@ -259,29 +269,29 @@ bool WorkerEqualisationJobCommand::operator==(const WorkerResultCommand& other) 
 	return this->filename == otherEqualisationJob.filename;
 }
 
-WorkerResultCommand::WorkerResultCommand(const std::string& result_type)
-    : WorkerCommand{ "RESULT" }, result_type{ result_type } {}
+WorkerResultCommand::WorkerResultCommand(std::string resultType)
+    : WorkerCommand{ "RESULT" }, result_type{ std::move(resultType) } {}
 
-void WorkerResultCommand::commandData(ProtocolCommand::Data::Builder& data_builder) const {
-	auto result_builder = data_builder.initResult();
-	result_builder.setType(this->result_type);
+void WorkerResultCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	auto resultBuilder = dataBuilder.initResult();
+	resultBuilder.setType(this->result_type);
 
-	auto result_data_builder = result_builder.initData();
-	this->commandData(result_data_builder);
+	auto resultDataBuilder = resultBuilder.initData();
+	this->command_data(resultDataBuilder);
 }
 
 std::unique_ptr<WorkerResultCommand>
-WorkerResultCommand::fromData(const ProtocolResult::Reader reader) {
-	const std::string decoded_type{ reader.getType() };
+WorkerResultCommand::from_data(const ProtocolResult::Reader reader) {
+	const std::string decodedType{ reader.getType() };
 	const auto data = reader.getData();
 
 	switch (data.which()) {
 		case ProtocolResult::Data::HISTOGRAM:
-			assert(decoded_type == "HISTOGRAM");
-			return WorkerHistogramResultCommand::fromData(data.getHistogram());
+			assert(decodedType == "HISTOGRAM");
+			return WorkerHistogramResultCommand::from_data(data.getHistogram());
 		case ProtocolResult::Data::EQUALISATION:
-			assert(decoded_type == "EQUALISATION");
-			return WorkerEqualisationResultCommand::fromData(data.getEqualisation());
+			assert(decodedType == "EQUALISATION");
+			return WorkerEqualisationResultCommand::from_data(data.getEqualisation());
 		default:
 			return nullptr;
 	}
@@ -295,29 +305,29 @@ bool WorkerResultCommand::operator==(const WorkerResultCommand& other) const {
 	return this->result_type == other.result_type;
 }
 
-WorkerHistogramResultCommand::WorkerHistogramResultCommand(const std::string& filename,
+WorkerHistogramResultCommand::WorkerHistogramResultCommand(std::string filename,
                                                            const Histogram& histogram)
-    : WorkerResultCommand{ "HISTOGRAM" }, filename{ filename }, histogram{ histogram } {}
+    : WorkerResultCommand{ "HISTOGRAM" }, filename{ std::move(filename) }, histogram{ histogram } {}
 
 std::unique_ptr<WorkerHistogramResultCommand>
-WorkerHistogramResultCommand::fromData(const HistogramResult::Reader histogram_reader) {
-	const std::string filename{ histogram_reader.getFilename() };
-	const auto encoded_histogram{ histogram_reader.getHistogram() };
+WorkerHistogramResultCommand::from_data(const HistogramResult::Reader histogramReader) {
+	const std::string filename{ histogramReader.getFilename() };
+	const auto encodedHistogram{ histogramReader.getHistogram() };
 	Histogram histogram{};
 
-	assert(histogram_reader.getHistogram().size() == histogram.size());
+	assert(histogramReader.getHistogram().size() == histogram.size());
 
-	for (size_t i = 0; i < encoded_histogram.size(); i++) {
-		histogram[i] = encoded_histogram[i];
+	for (size_t i = 0; i < encodedHistogram.size(); i++) {
+		histogram[i] = encodedHistogram[i];
 	}
 
 	return std::make_unique<WorkerHistogramResultCommand>(filename, histogram);
 }
 
-void WorkerHistogramResultCommand::commandData(ProtocolResult::Data::Builder& data_builder) const {
-	HistogramResult::Builder histogram_builder = data_builder.initHistogram();
-	histogram_builder.setFilename(filename);
-	auto serializableHistogram = histogram_builder.initHistogram(histogram.size());
+void WorkerHistogramResultCommand::command_data(ProtocolResult::Data::Builder& dataBuilder) const {
+	HistogramResult::Builder histogramBuilder = dataBuilder.initHistogram();
+	histogramBuilder.setFilename(filename);
+	auto serializableHistogram = histogramBuilder.initHistogram(histogram.size());
 
 	for (size_t i = 0; i < histogram.size(); i++) {
 		serializableHistogram.set(i, histogram[i]);
@@ -325,14 +335,14 @@ void WorkerHistogramResultCommand::commandData(ProtocolResult::Data::Builder& da
 }
 
 void WorkerHistogramResultCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitHistogramResult(*this);
+	return visitor.visit_histogram_result(*this);
 }
 
-std::string WorkerHistogramResultCommand::getFilename() const {
+std::string WorkerHistogramResultCommand::get_filename() const {
 	return this->filename;
 }
 
-Histogram WorkerHistogramResultCommand::getHistogram() const {
+Histogram WorkerHistogramResultCommand::get_histogram() const {
 	return this->histogram;
 }
 
@@ -356,36 +366,37 @@ bool WorkerHistogramResultCommand::operator==(const WorkerResultCommand& jobComm
 	return this->filename == histogramJobCommand.filename;
 }
 
-WorkerEqualisationResultCommand::WorkerEqualisationResultCommand(
-    const std::string& filename, const std::vector<std::uint8_t>& tiff_data)
-    : WorkerResultCommand{ "EQUALISATION" }, filename{ filename }, tiff_data{ tiff_data } {}
+WorkerEqualisationResultCommand::WorkerEqualisationResultCommand(std::string filename,
+                                                                 std::vector<std::uint8_t> tiffData)
+    : WorkerResultCommand{ "EQUALISATION" }, filename{ std::move(filename) }, tiff_data{ std::move(
+	                                                                                tiffData) } {}
 
 std::unique_ptr<WorkerEqualisationResultCommand>
-WorkerEqualisationResultCommand::fromData(const EqualisationResult::Reader equalisation_reader) {
-	const std::string filename{ equalisation_reader.getFilename() };
-	const auto& tiff_data = equalisation_reader.getTiffResult().asBytes();
+WorkerEqualisationResultCommand::from_data(const EqualisationResult::Reader equalisationReader) {
+	const std::string filename{ equalisationReader.getFilename() };
+	const auto& tiffData = equalisationReader.getTiffResult().asBytes();
 
 	return std::make_unique<WorkerEqualisationResultCommand>(
-	    filename, std::vector<std::uint8_t>{ tiff_data.begin(), tiff_data.end() });
+	    filename, std::vector<std::uint8_t>{ tiffData.begin(), tiffData.end() });
 }
 
-void WorkerEqualisationResultCommand::commandData(
-    ProtocolResult::Data::Builder& data_builder) const {
-	EqualisationResult::Builder equalisation_builder = data_builder.initEqualisation();
-	equalisation_builder.setFilename(filename);
-	auto tiffResultBuilder = equalisation_builder.initTiffResult(this->tiff_data.size());
+void WorkerEqualisationResultCommand::command_data(
+    ProtocolResult::Data::Builder& dataBuilder) const {
+	EqualisationResult::Builder equalisationBuilder = dataBuilder.initEqualisation();
+	equalisationBuilder.setFilename(filename);
+	auto tiffResultBuilder = equalisationBuilder.initTiffResult(this->tiff_data.size());
 	std::copy(this->tiff_data.begin(), this->tiff_data.end(), tiffResultBuilder.begin());
 }
 
 void WorkerEqualisationResultCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitEqualisationResult(*this);
+	return visitor.visit_equalisation_result(*this);
 }
 
-std::string WorkerEqualisationResultCommand::getFilename() const {
+std::string WorkerEqualisationResultCommand::get_filename() const {
 	return this->filename;
 }
 
-std::vector<std::uint8_t> WorkerEqualisationResultCommand::getTiffData() const {
+std::vector<std::uint8_t> WorkerEqualisationResultCommand::get_tiff_data() const {
 	return this->tiff_data;
 }
 
@@ -411,106 +422,106 @@ bool WorkerEqualisationResultCommand::operator==(const WorkerResultCommand& jobC
 	return this->filename == equalisationJobCommand.filename;
 }
 
-WorkerHeartbeatCommand::WorkerHeartbeatCommand(const std::string& peer_name)
-    : WorkerCommand{ "HEARTBEAT" }, peer_name{ peer_name } {}
+WorkerHeartbeatCommand::WorkerHeartbeatCommand(std::string peerName)
+    : WorkerCommand{ "HEARTBEAT" }, peer_name{ std::move(peerName) } {}
 
 std::unique_ptr<WorkerHeartbeatCommand>
-WorkerHeartbeatCommand::fromData(const capnp::Text::Reader reader) {
-	const std::string heartbeat_data{ reader };
+WorkerHeartbeatCommand::from_data(const capnp::Text::Reader reader) {
+	const std::string heartbeatData{ reader };
 
-	return std::make_unique<WorkerHeartbeatCommand>(heartbeat_data);
+	return std::make_unique<WorkerHeartbeatCommand>(heartbeatData);
 }
 
-void WorkerHeartbeatCommand::commandData(ProtocolCommand::Data::Builder& data_builder) const {
-	data_builder.setHeatbeat(peer_name);
+void WorkerHeartbeatCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	dataBuilder.setHeatbeat(peer_name);
 }
 
-std::string WorkerHeartbeatCommand::getPeerName() const {
+std::string WorkerHeartbeatCommand::get_peer_name() const {
 	return this->peer_name;
 }
 
 void WorkerHeartbeatCommand::visit(CommandVisitor& visitor) const {
-	return visitor.visitHeartbeat(*this);
+	return visitor.visit_heartbeat(*this);
 }
 
-void CommandVisitor::visitHelo(const WorkerHeloCommand& heloCommand) {}
-void CommandVisitor::visitEhlo(const WorkerEhloCommand& ehloCommand) {}
-void CommandVisitor::visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) {}
-void CommandVisitor::visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand) {}
-void CommandVisitor::visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) {}
-void CommandVisitor::visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand) {
-}
-void CommandVisitor::visitHeartbeat(const WorkerHeartbeatCommand& heatbeatCommand) {}
+void CommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {}
+void CommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {}
+void CommandVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {}
+void CommandVisitor::visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) {}
+void CommandVisitor::visit_histogram_result(const WorkerHistogramResultCommand& resultCommand) {}
+void CommandVisitor::visit_equalisation_result(
+    const WorkerEqualisationResultCommand& resultCommand) {}
+void CommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {}
 
 ConnectingWorkerCommandVisitor::ConnectingWorkerCommandVisitor(
     ServerConnection::State& connectionState)
     : connectionState{ connectionState } {}
 
-void ConnectingWorkerCommandVisitor::visitEhlo(const WorkerEhloCommand& ehloCommand) {
+void ConnectingWorkerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
 	DEBUG_NETWORK("Visited server Ehlo whilst connecting\n");
 	this->connectionState =
-	    ServerConnection::transitionState(this->connectionState, ServerConnection::State::Connected);
+	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Connected);
 }
 
 RunningWorkerCommandVisitor::RunningWorkerCommandVisitor(zmqpp::socket& socket)
     : socket{ socket } {}
 
-void RunningWorkerCommandVisitor::visitHelo(const WorkerHeloCommand& heloCommand) {
+void RunningWorkerCommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited server Helo (unexpected)\n");
 }
 
-void RunningWorkerCommandVisitor::visitEhlo(const WorkerEhloCommand& ehloCommand) {
+void RunningWorkerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
 	/* Mark connection as successful / connected. */
 	DEBUG_NETWORK("Visited server Ehlo (unexpected once already connected)\n");
 }
 
-void RunningWorkerCommandVisitor::visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) {
+void RunningWorkerCommandVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {
 	/* Run job. */
 	DEBUG_NETWORK("Visited server Histogram Job: " << jobCommand.getFilename() << "\n");
-	std::optional<Histogram> histogram = image_get_histogram(jobCommand.getFilename());
+	std::optional<Histogram> histogram = image_get_histogram(jobCommand.get_filename());
 
 	assert(histogram);
 
 	zmqpp::message response{
-		WorkerHistogramResultCommand{ jobCommand.getFilename(), *histogram }.toMessage()
+		WorkerHistogramResultCommand{ jobCommand.get_filename(), *histogram }.to_message()
 	};
 
 	this->socket.send(response);
 }
 
-void RunningWorkerCommandVisitor::visitEqualisationJob(
+void RunningWorkerCommandVisitor::visit_equalisation_job(
     const WorkerEqualisationJobCommand& jobCommand) {
 	/* Run job. */
 	DEBUG_NETWORK("Visited server Equalisation Job: " << jobCommand.getFilename() << "\n");
-	std::vector<std::uint8_t> tiff_file =
-	    image_equalise(jobCommand.getFilename(), jobCommand.getHistogramOffsets());
+	std::vector<std::uint8_t> tiffFile =
+	    image_equalise(jobCommand.get_filename(), jobCommand.get_histogram_offsets());
 
 	zmqpp::message response{
-		WorkerEqualisationResultCommand{ jobCommand.getFilename(), tiff_file }.toMessage()
+		WorkerEqualisationResultCommand{ jobCommand.get_filename(), tiffFile }.to_message()
 	};
 
 	this->socket.send(response);
 }
 
-void RunningWorkerCommandVisitor::visitHistogramResult(
+void RunningWorkerCommandVisitor::visit_histogram_result(
     const WorkerHistogramResultCommand& resultCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited server Result (unexpected)\n");
 }
 
-void RunningWorkerCommandVisitor::visitEqualisationResult(
+void RunningWorkerCommandVisitor::visit_equalisation_result(
     const WorkerEqualisationResultCommand& resultCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited server Result (unexpected)\n");
 }
 
-void RunningWorkerCommandVisitor::visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
+void RunningWorkerCommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
 	/* Respond with the same heartbeat data. */
 	DEBUG_NETWORK("Visited server Heartbeat\n");
 
-	zmqpp::message command_message{
-		WorkerHeartbeatCommand{ heartbeatCommand.getPeerName() }.toMessage()
+	zmqpp::message commandMessage{
+		WorkerHeartbeatCommand{ heartbeatCommand.get_peer_name() }.to_message()
 	};
-	socket.send(command_message);
+	socket.send(commandMessage);
 }

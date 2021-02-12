@@ -8,8 +8,12 @@
 #include <mutex>
 #include <optional>
 #include <string>
-
 #include <zmqpp/zmqpp.hpp>
+
+namespace zmqpp {
+	class context;
+	class socket;
+} // namespace zmqpp
 
 struct ServerDetails {
 	std::string name;
@@ -33,9 +37,9 @@ public:
 		Dying,
 	};
 
-	ServerConnection(const std::string name, const std::string address, const uint16_t port);
-	ServerConnection(ServerConnection&& other);
-	explicit ServerConnection(const ServerDetails serverDetails);
+	ServerConnection(const std::string& name, const std::string& address, uint16_t port);
+	ServerConnection(ServerConnection&& other) noexcept;
+	explicit ServerConnection(ServerDetails serverDetails);
 
 	virtual ~ServerConnection();
 
@@ -52,9 +56,9 @@ public:
 
 	ServerConnection::State state() const;
 
-	ServerConnection::State transitionState(ServerConnection::State nextState) const;
-	static ServerConnection::State transitionState(ServerConnection::State currentState,
-	                                               ServerConnection::State nextState);
+	ServerConnection::State transition_state(ServerConnection::State nextState) const;
+	static ServerConnection::State transition_state(ServerConnection::State currentState,
+	                                                ServerConnection::State nextState);
 
 protected:
 	ServerDetails serverDetails;
@@ -69,12 +73,12 @@ class Worker {
 public:
 	Worker();
 
-	void addServer(const std::string name, const std::string address, const uint16_t port);
-	void removeServer(const std::string name, const std::string address, const uint16_t port);
-	void runJobs(zmqpp::context context);
+	void add_server(const std::string& name, const std::string& address, uint16_t port);
+	void remove_server(const std::string& name, const std::string& address, uint16_t port);
+	void run_jobs(zmqpp::context context);
 
-	bool hasJobs() const;
-	std::optional<ServerConnection> popConnection();
+	bool has_jobs() const;
+	std::optional<ServerConnection> pop_connection();
 
 protected:
 	std::map<ServerDetails, ServerConnection> connections;

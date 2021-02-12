@@ -1,13 +1,15 @@
 #pragma once
 
-#include <zmqpp/context.hpp>
-#include <zmqpp/socket.hpp>
-
+#include <cstddef>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <string>
+#include <vector>
+#include <zmqpp/context.hpp>
+#include <zmqpp/socket.hpp>
 
 #include "algorithm.hpp"
 #include "protocol.hpp"
@@ -15,11 +17,16 @@
 class ServerCommandVisitor;
 class ServerHistogramCommandVisitor;
 
+namespace zmqpp {
+	class context;
+	class message;
+} // namespace zmqpp
+
 class Server {
 public:
 	Server(zmqpp::context& context);
 
-	void serve_work(const std::filesystem::path& serve_path);
+	void serve_work(const std::filesystem::path& servePath);
 
 protected:
 	zmqpp::socket work_socket;
@@ -32,8 +39,8 @@ protected:
 	std::map<std::string, std::vector<WorkPtr>> worker_queues{};
 	std::recursive_mutex worker_mutex;
 
-	std::map<std::string, Histogram> receive_histograms(size_t total_work_samples);
-	void receive_equalised(size_t total_work_samples);
+	std::map<std::string, Histogram> receive_histograms(size_t totalWorkSamples);
+	void receive_equalised(size_t totalWorkSamples);
 	void transmit_work(const std::string& worker);
 
 	void send_message(const std::string& worker, zmqpp::message message);
@@ -44,14 +51,14 @@ protected:
 
 class ServerCommandVisitor : public CommandVisitor {
 public:
-	ServerCommandVisitor(Server& server, const std::string& worker_identity);
+	ServerCommandVisitor(Server& server, const std::string& workerIdentity);
 	virtual ~ServerCommandVisitor() = default;
 
-	void visitHelo(const WorkerHeloCommand& heloCommand) override;
-	void visitEhlo(const WorkerEhloCommand& ehloCommand) override;
-	void visitHistogramJob(const WorkerHistogramJobCommand& jobCommand) override;
-	void visitEqualisationJob(const WorkerEqualisationJobCommand& jobCommand) override;
-	void visitHeartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
+	void visit_helo(const WorkerHeloCommand& heloCommand) override;
+	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
+	void visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) override;
+	void visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) override;
+	void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
 
 protected:
 	Server& server;
@@ -60,11 +67,11 @@ protected:
 
 class ServerHistogramCommandVisitor : public ServerCommandVisitor {
 public:
-	ServerHistogramCommandVisitor(Server& server, const std::string& worker_identity,
-	                              std::map<std::string, Histogram>& work_results);
+	ServerHistogramCommandVisitor(Server& server, const std::string& workerIdentity,
+	                              std::map<std::string, Histogram>& workResults);
 
-	void visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) override;
-	void visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand) override;
+	void visit_histogram_result(const WorkerHistogramResultCommand& resultCommand) override;
+	void visit_equalisation_result(const WorkerEqualisationResultCommand& resultCommand) override;
 
 protected:
 	std::map<std::string, Histogram>& histogram_results;
@@ -72,11 +79,11 @@ protected:
 
 class ServerEqualisationCommandVisitor : public ServerCommandVisitor {
 public:
-	ServerEqualisationCommandVisitor(Server& server, const std::string& worker_identity,
-	                                 size_t& equalised_count);
+	ServerEqualisationCommandVisitor(Server& server, const std::string& workerIdentity,
+	                                 size_t& equalisedCount);
 
-	void visitHistogramResult(const WorkerHistogramResultCommand& resultCommand) override;
-	void visitEqualisationResult(const WorkerEqualisationResultCommand& resultCommand) override;
+	void visit_histogram_result(const WorkerHistogramResultCommand& resultCommand) override;
+	void visit_equalisation_result(const WorkerEqualisationResultCommand& resultCommand) override;
 
 protected:
 	size_t& equalised_count;
