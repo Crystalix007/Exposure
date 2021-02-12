@@ -35,8 +35,8 @@ std::string encode_histogram_result(const std::string& filename, const Histogram
 	return std::string{ charArray.begin(), charArray.end() };
 }
 
-WorkerCommand::WorkerCommand(const std::string_view& commandString)
-    : command_string{ commandString } {}
+WorkerCommand::WorkerCommand(std::string commandString)
+    : command_string{ std::move(commandString) } {}
 
 WorkerCommand::~WorkerCommand() = default;
 
@@ -96,6 +96,9 @@ WorkerCommand::from_serialised_string(const std::string& serialisedString) {
 		case ProtocolCommand::Data::HEATBEAT:
 			assert(command == "HEARTBEAT");
 			return WorkerHeartbeatCommand::from_data(data.getHeatbeat());
+		case ProtocolCommand::Data::BYE:
+			assert(command == "BYE");
+			return WorkerByeCommand::from_data();
 		default:
 			std::clog << "Invalid command detected\n";
 			return nullptr;
@@ -444,6 +447,20 @@ void WorkerHeartbeatCommand::visit(CommandVisitor& visitor) const {
 	return visitor.visit_heartbeat(*this);
 }
 
+WorkerByeCommand::WorkerByeCommand() : WorkerCommand{ "BYE" } {}
+
+void WorkerByeCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
+	dataBuilder.setBye();
+}
+
+void WorkerByeCommand::visit(CommandVisitor& visitor) const {
+	visitor.visit_bye(*this);
+}
+
+std::unique_ptr<WorkerByeCommand> WorkerByeCommand::from_data() {
+	return std::make_unique<WorkerByeCommand>();
+}
+
 void CommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {}
 void CommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {}
 void CommandVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {}
@@ -452,6 +469,7 @@ void CommandVisitor::visit_histogram_result(const WorkerHistogramResultCommand& 
 void CommandVisitor::visit_equalisation_result(
     const WorkerEqualisationResultCommand& resultCommand) {}
 void CommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {}
+void CommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {}
 
 ConnectingWorkerCommandVisitor::ConnectingWorkerCommandVisitor(
     ServerConnection::State& connectionState)
@@ -463,8 +481,15 @@ void ConnectingWorkerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCom
 	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Connected);
 }
 
-RunningWorkerCommandVisitor::RunningWorkerCommandVisitor(zmqpp::socket& socket)
-    : socket{ socket } {}
+void ConnectingWorkerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+	DEBUG_NETWORK("Visited server Bye whilst connecting\n");
+	this->connectionState =
+	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Dying);
+}
+
+RunningWorkerCommandVisitor::RunningWorkerCommandVisitor(zmqpp::socket& socket,
+                                                         ServerConnection::State& connectionState)
+    : socket{ socket }, connectionState{ connectionState } {}
 
 void RunningWorkerCommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
 	/* Ignore unexpected message. */
@@ -478,7 +503,7 @@ void RunningWorkerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloComman
 
 void RunningWorkerCommandVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {
 	/* Run job. */
-	DEBUG_NETWORK("Visited server Histogram Job: " << jobCommand.getFilename() << "\n");
+	DEBUG_NETWORK("Visited server Histogram Job: " << jobCommand.get_filename() << "\n");
 	std::optional<Histogram> histogram = image_get_histogram(jobCommand.get_filename());
 
 	assert(histogram);
@@ -493,7 +518,7 @@ void RunningWorkerCommandVisitor::visit_histogram_job(const WorkerHistogramJobCo
 void RunningWorkerCommandVisitor::visit_equalisation_job(
     const WorkerEqualisationJobCommand& jobCommand) {
 	/* Run job. */
-	DEBUG_NETWORK("Visited server Equalisation Job: " << jobCommand.getFilename() << "\n");
+	DEBUG_NETWORK("Visited server Equalisation Job: " << jobCommand.get_filename() << "\n");
 	std::vector<std::uint8_t> tiffFile =
 	    image_equalise(jobCommand.get_filename(), jobCommand.get_histogram_offsets());
 
@@ -524,4 +549,10 @@ void RunningWorkerCommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& 
 		WorkerHeartbeatCommand{ heartbeatCommand.get_peer_name() }.to_message()
 	};
 	socket.send(commandMessage);
+}
+
+void RunningWorkerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+	DEBUG_NETWORK("Visited server Bye\n");
+	this->connectionState =
+	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Dying);
 }

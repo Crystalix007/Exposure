@@ -33,7 +33,7 @@ class CommandVisitor;
 
 class WorkerCommand {
 public:
-	WorkerCommand(const std::string_view& commandString);
+	WorkerCommand(std::string commandString);
 	virtual ~WorkerCommand();
 
 	virtual void command_data(ProtocolCommand::Data::Builder& dataBuilder) const = 0;
@@ -46,7 +46,7 @@ public:
 	static std::unique_ptr<WorkerCommand> from_serialised_string(const std::string& serialisedString);
 
 private:
-	std::string command_string;
+	const std::string command_string;
 };
 
 class WorkerHeloCommand : public WorkerCommand {
@@ -224,6 +224,17 @@ protected:
 	std::string peer_name;
 };
 
+class WorkerByeCommand : public WorkerCommand {
+public:
+	WorkerByeCommand();
+	~WorkerByeCommand() override = default;
+
+	void command_data(ProtocolCommand::Data::Builder& dataBuilder) const override;
+	void visit(CommandVisitor& visitor) const override;
+
+	static std::unique_ptr<WorkerByeCommand> from_data();
+};
+
 class CommandVisitor {
 public:
 	CommandVisitor() = default;
@@ -235,6 +246,7 @@ public:
 	virtual void visit_histogram_result(const WorkerHistogramResultCommand& resultCommand);
 	virtual void visit_equalisation_result(const WorkerEqualisationResultCommand& resultCommand);
 	virtual void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand);
+	virtual void visit_bye(const WorkerByeCommand& byeCommand);
 };
 
 class ConnectingWorkerCommandVisitor : public CommandVisitor {
@@ -242,6 +254,7 @@ public:
 	ConnectingWorkerCommandVisitor(ServerConnection::State& connectionState);
 
 	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
+	void visit_bye(const WorkerByeCommand& byeCommand) override;
 
 protected:
 	ServerConnection::State& connectionState;
@@ -249,7 +262,7 @@ protected:
 
 class RunningWorkerCommandVisitor : public CommandVisitor {
 public:
-	RunningWorkerCommandVisitor(zmqpp::socket& socket);
+	RunningWorkerCommandVisitor(zmqpp::socket& socket, ServerConnection::State& connectionState);
 
 	void visit_helo(const WorkerHeloCommand& heloCommand) override;
 	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
@@ -258,7 +271,9 @@ public:
 	void visit_histogram_result(const WorkerHistogramResultCommand& resultCommand) override;
 	void visit_equalisation_result(const WorkerEqualisationResultCommand& resultCommand) override;
 	void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
+	void visit_bye(const WorkerByeCommand& byeCommand) override;
 
 protected:
 	zmqpp::socket& socket;
+	ServerConnection::State& connectionState;
 };

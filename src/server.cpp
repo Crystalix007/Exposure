@@ -82,6 +82,8 @@ void Server::serve_work(const std::filesystem::path& servePath) {
 	    std::async(std::launch::async, &Server::receive_equalised, this, jobCount);
 
 	receiveImagesWorkJob.wait();
+
+	this->dismiss_workers();
 }
 
 void Server::transmit_work(const std::string& worker) {
@@ -163,6 +165,18 @@ void Server::send_message(const std::string& worker, zmqpp::message message) {
 	work_socket.send(message);
 }
 
+void Server::dismiss_workers() {
+	std::unique_lock<std::recursive_mutex> workLock{ this->worker_mutex };
+	std::unique_lock<std::recursive_mutex> workerLock{ this->work_mutex };
+
+	for (const auto& [worker, _] : worker_queues) {
+		this->send_message(worker, WorkerByeCommand{}.to_message());
+	}
+
+	// Mark workers as dismissed in local state
+	worker_queues.clear();
+}
+
 ServerCommandVisitor::ServerCommandVisitor(Server& server, const std::string& workerIdentity)
     : server{ server }, worker_identity{ workerIdentity } {}
 
@@ -198,6 +212,27 @@ void ServerCommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbe
 	};
 
 	server.send_message(heartbeatCommand.get_peer_name(), std::move(commandMessage));
+}
+
+void ServerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+	DEBUG_NETWORK("Visited Worker Bye\n");
+
+	std::unique_lock<std::recursive_mutex> workLock{ this->server.work_mutex };
+	std::unique_lock<std::recursive_mutex> workerLock{ this->server.worker_mutex };
+
+	const auto workerJobsIter = this->server.worker_queues.find(worker_identity);
+
+	if (workerJobsIter != this->server.worker_queues.end()) {
+		auto& workerJobs = workerJobsIter->second;
+
+		while (!workerJobs.empty()) {
+			auto&& job = std::move(workerJobs.back());
+			this->server.enqueued_work.push(std::move(job));
+			workerJobs.pop_back();
+		}
+	}
+
+	this->server.worker_queues.erase(workerJobsIter);
 }
 
 ServerHistogramCommandVisitor::ServerHistogramCommandVisitor(

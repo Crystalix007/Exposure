@@ -141,10 +141,6 @@ EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previo
 	return mapping;
 }
 
-constexpr Magick::Quantum lerp(Magick::Quantum a, Magick::Quantum b, Magick::Quantum t) noexcept {
-	return a + t * (b - a);
-}
-
 Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMapping& mapping) {
 	const uint32_t histogramBin =
 	    static_cast<size_t>(round((static_cast<double>(value) / static_cast<double>(QuantumRange)) *

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <string>
 #include <zmqpp/zmqpp.hpp>
 
@@ -65,8 +65,7 @@ protected:
 	std::unique_ptr<zmqpp::socket> work_socket;
 	ServerConnection::State currentState;
 	mutable std::mutex currentStateMutex;
-	std::condition_variable running_condition;
-	std::mutex running_mutex;
+	std::binary_semaphore runningCondition;
 };
 
 class Worker {

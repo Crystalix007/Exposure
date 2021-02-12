@@ -22,20 +22,18 @@ bool ServerDetails::operator<(const ServerDetails& other) const noexcept {
 
 ServerConnection::ServerConnection(const std::string& name, const std::string& address,
                                    const uint16_t port)
-    : serverDetails{ name, address, port }, work_socket{}, currentState{
-	      ServerConnection::State::Unconnected
-      } {
+    : serverDetails{ name, address, port }, work_socket{},
+      currentState{ ServerConnection::State::Unconnected }, runningCondition{ 0 } {
 	assert(address.length() == 4 || address.length() == 16);
 }
 
 ServerConnection::ServerConnection(ServerDetails serverDetails)
-    : serverDetails{ std::move(serverDetails) }, work_socket{}, currentState{
-	      ServerConnection::State::Unconnected
-      } {}
+    : serverDetails{ std::move(serverDetails) }, work_socket{},
+      currentState{ ServerConnection::State::Unconnected }, runningCondition{ 0 } {}
 
 ServerConnection::ServerConnection(ServerConnection&& other) noexcept
     : serverDetails{ std::move(other.serverDetails) }, work_socket{ std::move(other.work_socket) },
-      currentState{ other.currentState } {}
+      currentState{ other.currentState }, runningCondition{ 0 } {}
 
 ServerConnection::~ServerConnection() {
 	this->disconnect();
@@ -78,8 +76,7 @@ void ServerConnection::disconnect() {
 	}
 
 	if (previousState != ServerConnection::State::Unconnected) {
-		std::unique_lock<std::mutex> lock{ this->running_mutex };
-		running_condition.wait(lock);
+		runningCondition.acquire();
 		work_socket->disconnect(this->work_endpoint());
 		work_socket.reset();
 	}
@@ -104,13 +101,13 @@ void ServerConnection::run() {
 	while (this->state() != ServerConnection::State::Dying) {
 		std::string message;
 		work_socket->receive(message);
-		RunningWorkerCommandVisitor commandVisitor{ *this->work_socket };
+		std::unique_lock<std::mutex> currentStateMutex{ this->currentStateMutex };
+		RunningWorkerCommandVisitor commandVisitor{ *this->work_socket, this->currentState };
 
 		WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
 	}
 
-	std::unique_lock<std::mutex> lock{ this->running_mutex };
-	this->running_condition.notify_all();
+	this->runningCondition.release();
 }
 
 ServerConnection::State ServerConnection::state() const {

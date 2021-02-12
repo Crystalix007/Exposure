@@ -43,5 +43,6 @@ struct ProtocolCommand {
 		heatbeat @3 : Text;
 		job      @4 : ProtocolJob;
 		result   @5 : ProtocolResult;
+		bye      @6 : Void;
 	}
 }

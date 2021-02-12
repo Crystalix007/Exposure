@@ -45,6 +45,8 @@ protected:
 
 	void send_message(const std::string& worker, zmqpp::message message);
 
+	void dismiss_workers();
+
 	friend ServerCommandVisitor;
 	friend ServerHistogramCommandVisitor;
 };
@@ -59,6 +61,7 @@ public:
 	void visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) override;
 	void visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) override;
 	void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
+	void visit_bye(const WorkerByeCommand& byeCommand) override;
 
 protected:
 	Server& server;
