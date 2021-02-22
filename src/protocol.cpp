@@ -18,21 +18,16 @@
 
 #include "algorithm.hpp"
 
-std::string encode_histogram_result(const std::string& filename, const Histogram& histogram) {
-	capnp::MallocMessageBuilder message{};
+void split_equalisation_tiff(capnp::List<capnp::Data>::Builder tiffDataBuilder,
+                             const std::vector<std::uint8_t>& rawTiffData) {
+	for (size_t i = 0; i < tiffDataBuilder.size(); i++) {
+		const auto chunkSize = std::min(rawTiffData.size() - (i * MAX_CHUNK_SIZE), MAX_CHUNK_SIZE);
 
-	HistogramResult::Builder resultBuilder = message.initRoot<HistogramResult>();
-	resultBuilder.setFilename(filename);
-	auto serializableHistogram = resultBuilder.initHistogram(histogram.size());
+		const auto* const startIter = rawTiffData.data() + (i * MAX_CHUNK_SIZE);
+		capnp::Data::Reader reader{ startIter, chunkSize };
 
-	for (size_t i = 0; i < histogram.size(); i++) {
-		serializableHistogram.set(i, histogram[i]);
+		tiffDataBuilder.set(i, reader);
 	}
-
-	const auto byteArray = capnp::messageToFlatArray(message);
-	const auto charArray = byteArray.asChars();
-
-	return std::string{ charArray.begin(), charArray.end() };
 }
 
 WorkerCommand::WorkerCommand(std::string commandString)
@@ -377,18 +372,26 @@ WorkerEqualisationResultCommand::WorkerEqualisationResultCommand(std::string fil
 std::unique_ptr<WorkerEqualisationResultCommand>
 WorkerEqualisationResultCommand::from_data(const EqualisationResult::Reader equalisationReader) {
 	const std::string filename{ equalisationReader.getFilename() };
-	const auto& tiffData = equalisationReader.getTiffResult().asBytes();
+	const auto& tiffDataList = equalisationReader.getTiffResult();
+	std::vector<uint8_t> tiffData{};
 
-	return std::make_unique<WorkerEqualisationResultCommand>(
-	    filename, std::vector<std::uint8_t>{ tiffData.begin(), tiffData.end() });
+	for (const auto& tiffDataChunk : tiffDataList) {
+		const auto& tiffDataChunkBytes = tiffDataChunk.asBytes();
+		tiffData.insert(tiffData.end(), tiffDataChunkBytes.begin(), tiffDataChunkBytes.end());
+	}
+
+	return std::make_unique<WorkerEqualisationResultCommand>(filename, tiffData);
 }
 
 void WorkerEqualisationResultCommand::command_data(
     ProtocolResult::Data::Builder& dataBuilder) const {
 	EqualisationResult::Builder equalisationBuilder = dataBuilder.initEqualisation();
 	equalisationBuilder.setFilename(filename);
-	auto tiffResultBuilder = equalisationBuilder.initTiffResult(this->tiff_data.size());
-	std::copy(this->tiff_data.begin(), this->tiff_data.end(), tiffResultBuilder.begin());
+
+	const auto chunkDiv = std::lldiv(this->tiff_data.size(), MAX_CHUNK_SIZE);
+	const auto chunkCount = chunkDiv.quot + ((chunkDiv.rem == 0) ? 0ULL : 1ULL);
+	auto tiffResultBuilder = equalisationBuilder.initTiffResult(chunkCount);
+	split_equalisation_tiff(tiffResultBuilder, this->tiff_data);
 }
 
 void WorkerEqualisationResultCommand::visit(CommandVisitor& visitor) const {

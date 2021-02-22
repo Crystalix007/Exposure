@@ -7,7 +7,7 @@ struct HistogramResult {
 
 struct EqualisationResult {
 	filename   @0 : Text;
-	tiffResult @1 : Data;
+	tiffResult @1 : List(Data);
 }
 
 struct HistogramJob {
