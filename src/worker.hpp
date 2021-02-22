@@ -8,7 +8,11 @@
 #include <optional>
 #include <semaphore>
 #include <string>
+#include <thread>
 #include <zmqpp/zmqpp.hpp>
+
+class WorkerJobCommand;
+class WorkerResultCommand;
 
 namespace zmqpp {
 	class context;
@@ -55,17 +59,30 @@ public:
 	zmqpp::endpoint_t work_endpoint() const;
 
 	ServerConnection::State state() const;
+	std::optional<std::unique_ptr<WorkerJobCommand>> pop_job();
 
-	ServerConnection::State transition_state(ServerConnection::State nextState) const;
+	ServerConnection::State transition_state(ServerConnection::State nextState);
 	static ServerConnection::State transition_state(ServerConnection::State currentState,
 	                                                ServerConnection::State nextState);
 
+	void send_message(zmqpp::message message) const;
+	void schedule_job(std::unique_ptr<WorkerJobCommand> job);
+	void notify_job();
+
+protected:
+	void background_tasks();
+
 protected:
 	ServerDetails serverDetails;
-	std::unique_ptr<zmqpp::socket> work_socket;
+	std::unique_ptr<zmqpp::socket> workSocket;
+	mutable std::mutex workSocketMutex;
 	ServerConnection::State currentState;
 	mutable std::mutex currentStateMutex;
-	std::binary_semaphore runningCondition;
+	std::binary_semaphore finishedSemaphore;
+	std::vector<std::unique_ptr<WorkerJobCommand>> jobs;
+	std::mutex jobsMutex;
+	std::binary_semaphore jobsSemaphore;
+	std::thread backgroundThread;
 };
 
 class Worker {

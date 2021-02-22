@@ -248,32 +248,3 @@ public:
 	virtual void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand);
 	virtual void visit_bye(const WorkerByeCommand& byeCommand);
 };
-
-class ConnectingWorkerCommandVisitor : public CommandVisitor {
-public:
-	ConnectingWorkerCommandVisitor(ServerConnection::State& connectionState);
-
-	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
-	void visit_bye(const WorkerByeCommand& byeCommand) override;
-
-protected:
-	ServerConnection::State& connectionState;
-};
-
-class RunningWorkerCommandVisitor : public CommandVisitor {
-public:
-	RunningWorkerCommandVisitor(zmqpp::socket& socket, ServerConnection::State& connectionState);
-
-	void visit_helo(const WorkerHeloCommand& heloCommand) override;
-	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
-	void visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) override;
-	void visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) override;
-	void visit_histogram_result(const WorkerHistogramResultCommand& resultCommand) override;
-	void visit_equalisation_result(const WorkerEqualisationResultCommand& resultCommand) override;
-	void visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) override;
-	void visit_bye(const WorkerByeCommand& byeCommand) override;
-
-protected:
-	zmqpp::socket& socket;
-	ServerConnection::State& connectionState;
-};
