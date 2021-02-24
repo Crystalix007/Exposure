@@ -72,7 +72,6 @@ public:
 protected:
 	void background_tasks();
 
-
 	ServerDetails serverDetails;
 	std::unique_ptr<zmqpp::socket> workSocket;
 	mutable std::mutex workSocketMutex;

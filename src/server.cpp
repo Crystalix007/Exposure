@@ -288,5 +288,19 @@ void ServerEqualisationCommandVisitor::visit_equalisation_result(
 
 	resultOutput.write(reinterpret_cast<const char*>(tiffData.data()), tiffData.size());
 
-	this->equalised_count++;
+	try {
+		std::vector<Server::WorkPtr>& queue = server.worker_queues.at(worker_identity);
+		this->equalised_count++;
+
+		queue.erase(
+		    std::find_if(queue.begin(), queue.end(), [&resultCommand](const Server::WorkPtr& work) {
+			    return *work.get() == resultCommand;
+		    }));
+
+		if (!server.enqueued_work.empty()) {
+			server.transmit_work(worker_identity);
+		}
+	} catch (std::out_of_range& exception) {
+		std::clog << "Invalid result from unknown (unregistered) worker: " << worker_identity << "\n";
+	}
 }

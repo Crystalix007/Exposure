@@ -23,7 +23,7 @@ namespace zmqpp {
 #if DEBUG_NETWORK_REQUESTS
 #	define DEBUG_NETWORK(x)                                                                         \
 		do {                                                                                           \
-			std::clog << x;                                                                              \
+			std::clog << (x);                                                                              \
 		} while (0)
 #else
 #	define DEBUG_NETWORK(x)

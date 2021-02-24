@@ -16,6 +16,7 @@
 
 class ServerCommandVisitor;
 class ServerHistogramCommandVisitor;
+class ServerEqualisationCommandVisitor;
 
 namespace zmqpp {
 	class context;
@@ -49,6 +50,7 @@ protected:
 
 	friend ServerCommandVisitor;
 	friend ServerHistogramCommandVisitor;
+	friend ServerEqualisationCommandVisitor;
 };
 
 class ServerCommandVisitor : public CommandVisitor {
