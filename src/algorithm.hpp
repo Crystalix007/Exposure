@@ -9,7 +9,7 @@
 #include "config.hpp"
 
 using Histogram = std::array<float, HISTOGRAM_SEGMENTS>;
-using EqualisationHistogramMapping = std::array<uint32_t, HISTOGRAM_SEGMENTS>;
+using EqualisationHistogramMapping = Histogram;
 
 std::optional<Histogram> image_get_histogram(const std::string& filename);
 EqualisationHistogramMapping identity_equalisation_histogram_mapping();

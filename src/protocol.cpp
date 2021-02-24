@@ -206,15 +206,15 @@ bool WorkerHistogramJobCommand::operator==(const WorkerResultCommand& other) con
 }
 
 WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(
-    std::string filename, const EqualisationHistogramMapping& histogramOffsets)
-    : WorkerJobCommand{ "EQUALISATION" }, filename{ std::move(filename) }, histogramOffsets{
-	      histogramOffsets
+    std::string filename, const EqualisationHistogramMapping& histogramMapping)
+    : WorkerJobCommand{ "EQUALISATION" }, filename{ std::move(filename) }, histogramMapping{
+	      histogramMapping
       } {}
 
 std::unique_ptr<WorkerEqualisationJobCommand>
 WorkerEqualisationJobCommand::from_data(const EqualisationJob::Reader reader) {
 	const std::string filename{ reader.getFilename() };
-	const auto messageHistogramOffsets = reader.getHistogramOffsets();
+	const auto messageHistogramOffsets = reader.getHistogramMapping();
 	EqualisationHistogramMapping mapping{};
 
 	for (size_t i = 0; i < mapping.size(); i++) {
@@ -228,10 +228,10 @@ void WorkerEqualisationJobCommand::command_data(ProtocolJob::Data::Builder& data
 	auto equalisationJob = dataBuilder.initEqualisation();
 
 	equalisationJob.setFilename(this->filename);
-	auto jobHistogramOffsets = equalisationJob.initHistogramOffsets(this->histogramOffsets.size());
+	auto jobHistogramOffsets = equalisationJob.initHistogramMapping(this->histogramMapping.size());
 
-	for (size_t i = 0; i < this->histogramOffsets.size(); i++) {
-		jobHistogramOffsets.set(i, this->histogramOffsets[i]);
+	for (size_t i = 0; i < this->histogramMapping.size(); i++) {
+		jobHistogramOffsets.set(i, this->histogramMapping[i]);
 	}
 }
 
@@ -239,8 +239,8 @@ std::string WorkerEqualisationJobCommand::get_filename() const {
 	return this->filename;
 }
 
-EqualisationHistogramMapping WorkerEqualisationJobCommand::get_histogram_offsets() const {
-	return this->histogramOffsets;
+EqualisationHistogramMapping WorkerEqualisationJobCommand::get_histogram_mapping() const {
+	return this->histogramMapping;
 }
 
 void WorkerEqualisationJobCommand::visit(CommandVisitor& visitor) const {

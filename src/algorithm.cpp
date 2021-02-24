@@ -1,6 +1,7 @@
 #include "algorithm.hpp"
 
 #include <Magick++.h>
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -91,7 +92,12 @@ struct EqualisationBand {
 
 EqualisationHistogramMapping identity_equalisation_histogram_mapping() {
 	EqualisationHistogramMapping mapping{};
-	std::iota(mapping.begin(), mapping.end(), 0);
+	size_t i = 0;
+	std::generate(mapping.begin(), mapping.end(), [&i]() {
+		double res = i * QuantumRange / HISTOGRAM_SEGMENTS;
+		i++;
+		return res;
+	});
 	return mapping;
 }
 
@@ -105,7 +111,7 @@ EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previo
 
 	for (uint32_t currentHistogramBin = 0; currentHistogramBin != currentHistogram.size() - 1 ||
 	                                       previousHistogramBin != previousHistogram.size() - 1;) {
-		mapping[currentHistogramBin] = previousHistogramBin;
+		mapping[currentHistogramBin] = previousHistogramBin * QuantumRange / mapping.size();
 
 		if (cumulativeCurrentHistogram < cumulativePreviousHistogram) {
 			if (currentHistogramBin < currentHistogram.size() - 1) {
@@ -138,17 +144,37 @@ EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previo
 		}
 	}
 
+	mapping.back() = previousHistogramBin * QuantumRange;
+
 	return mapping;
 }
 
 Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMapping& mapping) {
-	const uint32_t histogramBin =
-	    static_cast<size_t>(round((static_cast<double>(value) / static_cast<double>(QuantumRange)) *
-	                              static_cast<double>(mapping.size() - 1)));
+	const double histogramBin = (static_cast<double>(value) / static_cast<double>(QuantumRange)) *
+	                            static_cast<double>(mapping.size() - 1);
+	const uint32_t histogramBinRounded = static_cast<size_t>(round(histogramBin));
+	const double errorDelta = histogramBin - static_cast<double>(histogramBinRounded);
+	const double baseValue = mapping[histogramBinRounded];
+	const double belowValue = mapping[(histogramBinRounded == 0) ? 0 : (histogramBinRounded - 1)];
+	const double aboveValue =
+	    mapping[(histogramBinRounded >= mapping.size() - 1) ? histogramBinRounded
+	                                                        : (histogramBinRounded + 1)];
 
-	return static_cast<Magick::Quantum>(
-	    (static_cast<double>(mapping[histogramBin] * static_cast<double>(QuantumRange)) /
-	     static_cast<double>(mapping.size() - 1)));
+	assert((belowValue <= baseValue && aboveValue >= baseValue));
+
+	// What value needs to be interpolated with the current value
+	double interpolateValue = 0.0;
+
+	if (errorDelta >= 0.0) {
+		interpolateValue = aboveValue;
+	} else {
+		interpolateValue = belowValue;
+	}
+
+	const auto absErrorDelta = abs(errorDelta);
+
+	// Linearly interpolate between the base value and the interpolated value.
+	return static_cast<Magick::Quantum>(std::lerp(baseValue, interpolateValue, absErrorDelta));
 }
 
 std::vector<std::uint8_t> image_equalise(const std::string& filename,

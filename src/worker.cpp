@@ -376,7 +376,7 @@ void RunningWorkerCommandVisitor::visit_equalisation_job(
 	/* Run job. */
 	DEBUG_NETWORK("Running Equalisation Job: " << jobCommand.get_filename() << "\n");
 	std::vector<std::uint8_t> tiffFile =
-	    image_equalise(jobCommand.get_filename(), jobCommand.get_histogram_offsets());
+	    image_equalise(jobCommand.get_filename(), jobCommand.get_histogram_mapping());
 
 	zmqpp::message response{
 		WorkerEqualisationResultCommand{ jobCommand.get_filename(), tiffFile }.to_message()
