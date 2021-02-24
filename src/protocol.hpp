@@ -20,11 +20,8 @@ namespace zmqpp {
 	class socket;
 } // namespace zmqpp
 
-#if DEBUG_NETWORK_REQUESTS
-#	define DEBUG_NETWORK(x)                                                                         \
-		do {                                                                                           \
-			std::clog << (x);                                                                              \
-		} while (0)
+#if DEBUG_NETWORK_REQUESTS // NOLINTNEXTLINE(bugprone-macro-parentheses)
+#	define DEBUG_NETWORK(x) do { std::clog << x; } while (0)
 #else
 #	define DEBUG_NETWORK(x)
 #endif

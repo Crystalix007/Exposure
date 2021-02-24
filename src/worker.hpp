@@ -67,9 +67,14 @@ public:
 
 	void send_message(zmqpp::message message) const;
 	void schedule_job(std::unique_ptr<WorkerJobCommand> job);
+	void notify_dying();
 	void notify_job();
 
 protected:
+	// A single thread, capable of doing one task at a time
+	void background_task();
+
+	// Spawn hardware_concurrency() threads of background_task()
 	void background_tasks();
 
 	ServerDetails serverDetails;

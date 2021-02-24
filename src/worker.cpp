@@ -13,13 +13,13 @@
 // Command visitor to use whilst connecting to a server
 class ConnectingWorkerCommandVisitor : public CommandVisitor {
 public:
-	ConnectingWorkerCommandVisitor(ServerConnection::State& connectionState);
+	ConnectingWorkerCommandVisitor(ServerConnection& connection);
 
 	void visit_ehlo(const WorkerEhloCommand& ehloCommand) override;
 	void visit_bye(const WorkerByeCommand& byeCommand) override;
 
 protected:
-	ServerConnection::State& connectionState;
+	ServerConnection& connection;
 };
 
 // Command visitor to initially process
@@ -90,9 +90,7 @@ void ServerConnection::connect(zmqpp::context& context) {
 	assert(!this->connected());
 	assert(this->state() == ServerConnection::State::Unconnected);
 
-	std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
-
-	ConnectingWorkerCommandVisitor visitor{ this->currentState };
+	ConnectingWorkerCommandVisitor visitor{ *this };
 	workSocket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
 
 	const auto& endpoint = this->work_endpoint();
@@ -134,10 +132,7 @@ bool ServerConnection::connected() const {
 	return static_cast<bool>(workSocket);
 }
 
-void ServerConnection::background_tasks() {
-	assert(this->currentState != ServerConnection::State::Unconnected);
-	assert(this->workSocket);
-
+void ServerConnection::background_task() {
 	while (this->state() != ServerConnection::State::Dying) {
 		while (const auto job = this->pop_job()) {
 			RunningWorkerCommandVisitor visitor{ *this };
@@ -145,6 +140,21 @@ void ServerConnection::background_tasks() {
 		}
 
 		this->jobsSemaphore.acquire();
+	}
+}
+
+void ServerConnection::background_tasks() {
+	assert(this->currentState != ServerConnection::State::Unconnected);
+	assert(this->workSocket);
+
+	std::vector<std::thread> backgroundThreads{};
+
+	for (size_t i = 0; i < std::thread::hardware_concurrency(); i++) {
+		backgroundThreads.emplace_back(&ServerConnection::background_task, this);
+	}
+
+	for (auto& backgroundThread : backgroundThreads) {
+		backgroundThread.join();
 	}
 }
 
@@ -164,7 +174,7 @@ void ServerConnection::run() {
 	}
 
 	backgroundThread.join();
-	this->finishedSemaphore.release();
+	this->finishedSemaphore.release(std::thread::hardware_concurrency());
 }
 
 ServerConnection::State ServerConnection::state() const {
@@ -188,7 +198,6 @@ ServerConnection::State ServerConnection::transition_state(ServerConnection::Sta
 	std::unique_lock<std::mutex> currentStateLock{ this->currentStateMutex };
 	const auto currentState = this->currentState;
 	this->currentState = ServerConnection::transition_state(this->currentState, nextState);
-	this->notify_job();
 	return currentState;
 }
 
@@ -232,6 +241,11 @@ void ServerConnection::schedule_job(std::unique_ptr<WorkerJobCommand> job) {
 
 void ServerConnection::notify_job() {
 	this->jobsSemaphore.release();
+}
+
+void ServerConnection::notify_dying() {
+	// Allow all the threads to be woken
+	this->jobsSemaphore.release(std::thread::hardware_concurrency());
 }
 
 Worker::Worker() = default;
@@ -282,20 +296,19 @@ void Worker::run_jobs(zmqpp::context context) {
 	}
 }
 
-ConnectingWorkerCommandVisitor::ConnectingWorkerCommandVisitor(
-    ServerConnection::State& connectionState)
-    : connectionState{ connectionState } {}
+ConnectingWorkerCommandVisitor::ConnectingWorkerCommandVisitor(ServerConnection& connection)
+    : connection{ connection } {}
 
 void ConnectingWorkerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
 	DEBUG_NETWORK("Visited server Ehlo whilst connecting\n");
-	this->connectionState =
-	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Connected);
+	this->connection.transition_state(ServerConnection::State::Connected);
+	this->connection.notify_job();
 }
 
 void ConnectingWorkerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
 	DEBUG_NETWORK("Visited server Bye whilst connecting\n");
-	this->connectionState =
-	    ServerConnection::transition_state(this->connectionState, ServerConnection::State::Dying);
+	this->connection.transition_state(ServerConnection::State::Dying);
+	this->connection.notify_dying();
 }
 
 CommunicatingWorkerCommandVisitor::CommunicatingWorkerCommandVisitor(ServerConnection& connection)
@@ -352,6 +365,7 @@ void CommunicatingWorkerCommandVisitor::visit_heartbeat(
 void CommunicatingWorkerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
 	DEBUG_NETWORK("Visited server Bye\n");
 	this->connection.transition_state(ServerConnection::State::Dying);
+	this->connection.notify_dying();
 }
 
 RunningWorkerCommandVisitor::RunningWorkerCommandVisitor(ServerConnection& connection)
