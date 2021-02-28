@@ -44,10 +44,14 @@ struct ProtocolHeartbeat {
 	type     @0 : HeartbeatType;
 }
 
+struct ProtocolHelo {
+	concurrency @0 : UInt32;
+}
+
 struct ProtocolCommand {
 	command @0 : Text;
 	data       : union {
-		helo      @1 : Void;
+		helo      @1 : ProtocolHelo;
 		ehlo      @2 : Void;
 		heartbeat @3 : ProtocolHeartbeat;
 		job       @4 : ProtocolJob;

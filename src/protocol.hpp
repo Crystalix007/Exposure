@@ -48,13 +48,18 @@ private:
 
 class WorkerHeloCommand : public WorkerCommand {
 public:
-	WorkerHeloCommand();
+	WorkerHeloCommand(std::uint32_t concurrency);
 	~WorkerHeloCommand() override = default;
 
 	void command_data(ProtocolCommand::Data::Builder& dataBuilder) const override;
 	void visit(CommandVisitor& visitor) const override;
 
-	static std::unique_ptr<WorkerHeloCommand> from_data();
+	[[nodiscard]] std::uint32_t get_concurrency() const;
+
+	static std::unique_ptr<WorkerHeloCommand> from_data(ProtocolHelo::Reader reader);
+
+protected:
+	std::uint32_t concurrency;
 };
 
 class WorkerEhloCommand : public WorkerCommand {

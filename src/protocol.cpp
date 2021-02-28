@@ -78,7 +78,7 @@ WorkerCommand::from_serialised_string(const std::string& serialisedString) {
 	switch (data.which()) {
 		case ProtocolCommand::Data::HELO:
 			assert(command == "HELO");
-			return WorkerHeloCommand::from_data();
+			return WorkerHeloCommand::from_data(data.getHelo());
 		case ProtocolCommand::Data::EHLO:
 			assert(command == "EHLO");
 			return WorkerEhloCommand::from_data();
@@ -100,18 +100,25 @@ WorkerCommand::from_serialised_string(const std::string& serialisedString) {
 	}
 }
 
-WorkerHeloCommand::WorkerHeloCommand() : WorkerCommand{ "HELO" } {}
+WorkerHeloCommand::WorkerHeloCommand(std::uint32_t concurrency) : WorkerCommand{ "HELO" }, concurrency{ concurrency } {}
 
-std::unique_ptr<WorkerHeloCommand> WorkerHeloCommand::from_data() {
-	return std::make_unique<WorkerHeloCommand>();
+std::unique_ptr<WorkerHeloCommand> WorkerHeloCommand::from_data(ProtocolHelo::Reader reader) {
+	const auto concurrency{ reader.getConcurrency() };
+	return std::make_unique<WorkerHeloCommand>(concurrency);
 }
 
 void WorkerHeloCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
-	dataBuilder.setHelo();
+	auto helo = dataBuilder.initHelo();
+
+	helo.setConcurrency(this->concurrency);
 }
 
 void WorkerHeloCommand::visit(CommandVisitor& visitor) const {
 	return visitor.visit_helo(*this);
+}
+
+std::uint32_t WorkerHeloCommand::get_concurrency() const {
+	return this->concurrency;
 }
 
 WorkerEhloCommand::WorkerEhloCommand() : WorkerCommand{ "EHLO" } {}

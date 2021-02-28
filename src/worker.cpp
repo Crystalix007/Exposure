@@ -97,7 +97,7 @@ void ServerConnection::connect(zmqpp::context& context) {
 	std::clog << "Worker connecting to " << endpoint << "\n";
 	workSocket->connect(this->work_endpoint());
 
-	const auto heloCommand = WorkerHeloCommand{};
+	const auto heloCommand = WorkerHeloCommand{ std::thread::hardware_concurrency() };
 	auto heloMessage = heloCommand.to_message();
 	workSocket->send(heloMessage);
 

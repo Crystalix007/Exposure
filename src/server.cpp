@@ -95,10 +95,11 @@ void Server::transmit_work(const std::string& worker) {
 	std::unique_lock<std::recursive_mutex> workLock{ work_mutex };
 	std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
 
-	// Only add more work if under threshold
-	assert(worker_queues.at(worker).work.size() < MAX_WORKER_QUEUE);
+	// Require worker to have a queue already
+	assert(worker_queues.find(worker) != worker_queues.end());
 
-	while (worker_queues.at(worker).work.size() < MAX_WORKER_QUEUE && !enqueued_work.empty()) {
+	// Only add more work if under threshold
+	while (worker_queues.at(worker).work.size() < worker_queues.at(worker).concurrency && !enqueued_work.empty()) {
 		WorkPtr workItem = std::move(enqueued_work.front());
 		zmqpp::message message{};
 
@@ -255,6 +256,7 @@ void ServerCommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
 	DEBUG_NETWORK("Visited Worker Helo\n");
 	WorkerData newWorkerData{};
 	newWorkerData.last_heartbeat_request = std::chrono::system_clock::now();
+	newWorkerData.concurrency = std::min(heloCommand.get_concurrency(), MAX_WORKER_QUEUE);
 	server.worker_queues.insert(std::make_pair(worker_identity, std::move(newWorkerData)));
 	server.send_message(worker_identity, WorkerEhloCommand{}.to_message());
 	server.send_message(worker_identity,

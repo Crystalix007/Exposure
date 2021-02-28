@@ -7,7 +7,7 @@
 #define DEBUG_NETWORK_REQUESTS 0
 
 const constexpr std::uint16_t WORK_PORT = 42069U;
-const constexpr std::uint32_t MAX_WORKER_QUEUE = 2U;
+const constexpr std::uint32_t MAX_WORKER_QUEUE = 32U;
 const constexpr uint32_t HISTOGRAM_SEGMENTS = 1ULL << 10ULL;
 
 // By default, to be safe, allow 64MB chunks

@@ -31,6 +31,7 @@ struct WorkerData {
 	std::vector<WorkPtr> work;
 	Timestamp last_heartbeat_request;
 	bool heartbeat_reply_received;
+	std::uint32_t concurrency;
 };
 
 class Server {
