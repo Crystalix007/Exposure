@@ -355,11 +355,21 @@ void CommunicatingWorkerCommandVisitor::visit_heartbeat(
 	/* Respond with the same heartbeat data. */
 	DEBUG_NETWORK("Visited server Heartbeat\n");
 
-	zmqpp::message commandMessage{
-		WorkerHeartbeatCommand{ heartbeatCommand.get_peer_name() }.to_message()
-	};
+	switch (heartbeatCommand.get_heartbeat_type()) {
+		case HeartbeatType::REQUEST: {
+			const WorkerHeartbeatCommand command{
+				HeartbeatType::REPLY,
+			};
+			zmqpp::message commandMessage{ command.to_message() };
 
-	this->connection.send_message(std::move(commandMessage));
+			this->connection.send_message(std::move(commandMessage));
+			break;
+		}
+		case HeartbeatType::REPLY: {
+			std::cerr << "Unexpected heartbeat response. This worker never sent a heartbeat request.\n";
+			break;
+		}
+	}
 }
 
 void CommunicatingWorkerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {

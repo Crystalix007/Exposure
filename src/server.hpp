@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <map>
@@ -23,6 +24,15 @@ namespace zmqpp {
 	class message;
 } // namespace zmqpp
 
+using WorkPtr = std::unique_ptr<WorkerJobCommand>;
+using Timestamp = std::chrono::time_point<std::chrono::system_clock>;
+
+struct WorkerData {
+	std::vector<WorkPtr> work;
+	Timestamp last_heartbeat_request;
+	bool heartbeat_reply_received;
+};
+
 class Server {
 public:
 	Server(zmqpp::context& context);
@@ -32,21 +42,22 @@ public:
 protected:
 	zmqpp::socket work_socket;
 
-	using WorkPtr = std::unique_ptr<WorkerJobCommand>;
-
 	std::queue<WorkPtr> enqueued_work;
 	std::recursive_mutex work_mutex;
 
-	std::map<std::string, std::vector<WorkPtr>> worker_queues{};
+	std::map<std::string, WorkerData> worker_queues{};
 	std::recursive_mutex worker_mutex;
 
-	std::map<std::string, Histogram> receive_histograms(size_t totalWorkSamples);
+	[[nodiscard]] std::map<std::string, Histogram> receive_histograms(size_t totalWorkSamples);
 	void receive_equalised(size_t totalWorkSamples);
 	void transmit_work(const std::string& worker);
 
 	void send_message(const std::string& worker, zmqpp::message message);
 
+	// Dismisses worker and reallocates work onto the queue
+	void dismiss_worker(const std::string& worker);
 	void dismiss_workers();
+	void send_heartbeats();
 
 	friend ServerCommandVisitor;
 	friend ServerHistogramCommandVisitor;

@@ -2,13 +2,12 @@
 
 #include <algorithm>
 #include <array>
-#include <bits/exception.h>
 #include <cassert>
 #include <cxxabi.h>
+#include <exception>
 #include <fstream>
 #include <future>
 #include <iterator>
-#include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <zmqpp/message.hpp>
@@ -26,6 +25,10 @@ Server::Server(zmqpp::context& context) : work_socket{ context, zmqpp::socket_ty
 	work_socket.bind("tcp://*:" + std::to_string(WORK_PORT));
 	work_socket.set(zmqpp::socket_option::router_mandatory, true);
 	work_socket.set(zmqpp::socket_option::immediate, true);
+	work_socket.set(
+	    zmqpp::socket_option::receive_timeout,
+	    static_cast<int>(
+	        std::chrono::duration_cast<std::chrono::milliseconds>(MAX_HEARTBEAT_INTERVAL).count()));
 
 	assert(work_socket);
 }
@@ -59,7 +62,9 @@ void Server::serve_work(const std::filesystem::path& servePath) {
 	auto prevHistogramPointer = histograms.begin();
 	auto currHistogramPointer = std::next(prevHistogramPointer);
 
+#if DEBUG_SERVICE_DISCOVERY
 	std::clog << "Calculating brightness variations over " << histograms.size() << " histograms.\n";
+#endif
 
 	enqueued_work.push(std::make_unique<WorkerEqualisationJobCommand>(
 	    prevHistogramPointer->first, identity_equalisation_histogram_mapping()));
@@ -90,19 +95,17 @@ void Server::transmit_work(const std::string& worker) {
 	std::unique_lock<std::recursive_mutex> workLock{ work_mutex };
 	std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
 
-	assert(!enqueued_work.empty());
-
 	// Only add more work if under threshold
-	assert(worker_queues.at(worker).size() < MAX_WORKER_QUEUE);
+	assert(worker_queues.at(worker).work.size() < MAX_WORKER_QUEUE);
 
-	while (worker_queues.at(worker).size() < MAX_WORKER_QUEUE && !enqueued_work.empty()) {
+	while (worker_queues.at(worker).work.size() < MAX_WORKER_QUEUE && !enqueued_work.empty()) {
 		WorkPtr workItem = std::move(enqueued_work.front());
 		zmqpp::message message{};
 
 		workItem->add_to_message(message);
 		enqueued_work.pop();
 		send_message(worker, std::move(message));
-		worker_queues.at(worker).push_back(std::move(workItem));
+		worker_queues.at(worker).work.push_back(std::move(workItem));
 	}
 }
 
@@ -111,16 +114,27 @@ std::map<std::string, Histogram> Server::receive_histograms(size_t totalWorkSamp
 
 	while (workResults.size() < totalWorkSamples) {
 		zmqpp::message message{};
-		work_socket.receive(message);
 
-		std::string identity = message.get(0);
+		if (work_socket.receive(message)) {
+			std::string identity = message.get(0);
 
-		std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
+			{
+				std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
 
-		ServerHistogramCommandVisitor commandVisitor{ *this, identity, workResults };
+				ServerHistogramCommandVisitor commandVisitor{ *this, identity, workResults };
 
-		std::unique_ptr<WorkerCommand> command = WorkerCommand::from_serialised_string(message.get(1));
-		command->visit(commandVisitor);
+				try {
+					std::unique_ptr<WorkerCommand> command =
+					    WorkerCommand::from_serialised_string(message.get(1));
+					command->visit(commandVisitor);
+				} catch (const std::exception& e) {
+					std::clog << e.what() << "\n";
+					throw e;
+				}
+			}
+		}
+
+		this->send_heartbeats();
 	}
 
 	return workResults;
@@ -129,40 +143,72 @@ std::map<std::string, Histogram> Server::receive_histograms(size_t totalWorkSamp
 void Server::receive_equalised(size_t totalWorkSamples) {
 	size_t cumulativeWorkSamples = 0;
 
-	std::clog << "Serving jobs to " << worker_queues.size() << " existing workers.\n";
+	{
+		std::unique_lock<std::recursive_mutex> workerLock{ this->worker_mutex };
+		std::clog << "Serving jobs to " << worker_queues.size() << " existing workers.\n";
 
-	for (const auto& [worker, _] : worker_queues) {
-		if (!enqueued_work.empty()) {
-			this->transmit_work(worker);
-		} else {
-			break;
+		for (const auto& [worker, _] : worker_queues) {
+			if (!enqueued_work.empty()) {
+				this->transmit_work(worker);
+			} else {
+				break;
+			}
 		}
 	}
 
 	while (cumulativeWorkSamples < totalWorkSamples) {
 		zmqpp::message message{};
-		work_socket.receive(message);
 
-		std::string identity = message.get(0);
+		if (work_socket.receive(message)) {
+			std::string identity = message.get(0);
 
-		std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
+			{
+				std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
 
-		ServerEqualisationCommandVisitor commandVisitor{ *this, identity, cumulativeWorkSamples };
+				ServerEqualisationCommandVisitor commandVisitor{ *this, identity, cumulativeWorkSamples };
 
-		try {
-			std::unique_ptr<WorkerCommand> command =
-			    WorkerCommand::from_serialised_string(message.get(1));
-			command->visit(commandVisitor);
-		} catch (const std::exception& e) {
-			std::clog << e.what() << "\n";
-			throw e;
+				try {
+					std::unique_ptr<WorkerCommand> command =
+					    WorkerCommand::from_serialised_string(message.get(1));
+					command->visit(commandVisitor);
+				} catch (const std::exception& e) {
+					std::clog << e.what() << "\n";
+					throw e;
+				}
+			}
 		}
+
+		this->send_heartbeats();
 	}
 }
 
 void Server::send_message(const std::string& worker, zmqpp::message message) {
 	message.push_front(worker);
-	work_socket.send(message);
+
+	try {
+		work_socket.send(message);
+	} catch (const zmqpp::zmq_internal_exception& ignored) {
+		// Ignore errors sending to disconnected clients
+	}
+}
+
+void Server::dismiss_worker(const std::string& worker) {
+	std::unique_lock<std::recursive_mutex> workLock{ this->worker_mutex };
+	std::unique_lock<std::recursive_mutex> workerLock{ this->work_mutex };
+
+	auto workerDataIter = this->worker_queues.find(worker);
+
+	if (workerDataIter != this->worker_queues.end()) {
+		auto& work = workerDataIter->second.work;
+
+		for (auto& workItem : work) {
+			this->enqueued_work.push(std::move(workItem));
+		}
+
+		this->worker_queues.erase(workerDataIter);
+	}
+
+	this->send_message(worker, WorkerByeCommand{}.to_message());
 }
 
 void Server::dismiss_workers() {
@@ -177,14 +223,42 @@ void Server::dismiss_workers() {
 	worker_queues.clear();
 }
 
+void Server::send_heartbeats() {
+	std::unique_lock<std::recursive_mutex> workerLock{ this->worker_mutex };
+	std::vector<std::string> dismissedWorkers{};
+
+	for (auto& [worker, workerData] : worker_queues) {
+		std::chrono::seconds requestInterval = std::chrono::duration_cast<std::chrono::seconds>(
+		    std::chrono::system_clock::now() - workerData.last_heartbeat_request);
+
+		if (!workerData.heartbeat_reply_received && requestInterval > MAX_HEARTBEAT_INTERVAL) {
+			// Worker didn't respond within the required time, so dismiss
+			dismissedWorkers.push_back(worker);
+		} else if (workerData.heartbeat_reply_received && requestInterval > MAX_HEARTBEAT_INTERVAL) {
+			// Interval has passed since last heartbeat, so send new heartbeat
+			workerData.heartbeat_reply_received = false;
+			this->send_message(worker, WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
+			workerData.last_heartbeat_request = std::chrono::system_clock::now();
+		}
+	}
+
+	for (const auto& worker : dismissedWorkers) {
+		this->dismiss_worker(worker);
+	}
+}
+
 ServerCommandVisitor::ServerCommandVisitor(Server& server, const std::string& workerIdentity)
     : server{ server }, worker_identity{ workerIdentity } {}
 
 void ServerCommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
 	/* Mark connection as successful / connected. */
 	DEBUG_NETWORK("Visited Worker Helo\n");
-	server.worker_queues.insert(std::make_pair(worker_identity, std::vector<Server::WorkPtr>{}));
+	WorkerData newWorkerData{};
+	newWorkerData.last_heartbeat_request = std::chrono::system_clock::now();
+	server.worker_queues.insert(std::make_pair(worker_identity, std::move(newWorkerData)));
 	server.send_message(worker_identity, WorkerEhloCommand{}.to_message());
+	server.send_message(worker_identity,
+	                    WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
 
 	server.transmit_work(worker_identity);
 }
@@ -207,11 +281,34 @@ void ServerCommandVisitor::visit_equalisation_job(const WorkerEqualisationJobCom
 void ServerCommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
 	DEBUG_NETWORK("Visited Worker Heartbeat\n");
 
-	zmqpp::message commandMessage{
-		WorkerHeartbeatCommand{ heartbeatCommand.get_peer_name() }.to_message()
-	};
+	switch (heartbeatCommand.get_heartbeat_type()) {
+		case HeartbeatType::REQUEST: {
+			DEBUG_NETWORK("Received heartbeat request from worker\n");
+			const WorkerHeartbeatCommand command{
+				HeartbeatType::REPLY,
+			};
+			zmqpp::message commandMessage{ command.to_message() };
 
-	server.send_message(heartbeatCommand.get_peer_name(), std::move(commandMessage));
+			this->server.send_message(worker_identity, std::move(commandMessage));
+			break;
+		}
+		case HeartbeatType::REPLY: {
+			DEBUG_NETWORK("Received heartbeat reply from worker\n");
+			std::unique_lock<std::recursive_mutex> workerLock{ this->server.worker_mutex };
+			auto workerDataIter = this->server.worker_queues.find(worker_identity);
+
+			// Heartbeats from dismissed workers are irrelevant
+			if (workerDataIter == this->server.worker_queues.end()) {
+				DEBUG_NETWORK("Heartbeat from dismissed worker ('" << worker_identity << "')\n");
+				return;
+			}
+
+			// Update that we last received a heartbeat from this worker
+			WorkerData& workerData = workerDataIter->second;
+			workerData.heartbeat_reply_received = true;
+			break;
+		}
+	}
 }
 
 void ServerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
@@ -225,10 +322,10 @@ void ServerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
 	if (workerJobsIter != this->server.worker_queues.end()) {
 		auto& workerJobs = workerJobsIter->second;
 
-		while (!workerJobs.empty()) {
-			auto&& job = std::move(workerJobs.back());
+		while (!workerJobs.work.empty()) {
+			auto&& job = std::move(workerJobs.work.back());
 			this->server.enqueued_work.push(std::move(job));
-			workerJobs.pop_back();
+			workerJobs.work.pop_back();
 		}
 	}
 
@@ -246,20 +343,19 @@ void ServerHistogramCommandVisitor::visit_histogram_result(
 	DEBUG_NETWORK("Visited Worker Histogram Result\n");
 
 	try {
-		std::vector<Server::WorkPtr>& queue = server.worker_queues.at(worker_identity);
+		std::vector<WorkPtr>& queue = server.worker_queues.at(worker_identity).work;
 		histogram_results.insert(
 		    std::make_pair(resultCommand.get_filename(), resultCommand.get_histogram()));
 
-		queue.erase(
-		    std::find_if(queue.begin(), queue.end(), [&resultCommand](const Server::WorkPtr& work) {
-			    return *work.get() == resultCommand;
-		    }));
+		queue.erase(std::find_if(queue.begin(), queue.end(), [&resultCommand](const WorkPtr& work) {
+			return *work.get() == resultCommand;
+		}));
 
 		if (!server.enqueued_work.empty()) {
 			server.transmit_work(worker_identity);
 		}
 	} catch (std::out_of_range& exception) {
-		std::clog << "Invalid result from unknown (unregistered) worker: " << worker_identity << "\n";
+		std::clog << "Invalid result from unknown (unregistered) worker: '" << worker_identity << "'\n";
 	}
 }
 
@@ -289,18 +385,17 @@ void ServerEqualisationCommandVisitor::visit_equalisation_result(
 	resultOutput.write(reinterpret_cast<const char*>(tiffData.data()), tiffData.size());
 
 	try {
-		std::vector<Server::WorkPtr>& queue = server.worker_queues.at(worker_identity);
+		std::vector<WorkPtr>& queue = server.worker_queues.at(worker_identity).work;
 		this->equalised_count++;
 
-		queue.erase(
-		    std::find_if(queue.begin(), queue.end(), [&resultCommand](const Server::WorkPtr& work) {
-			    return *work.get() == resultCommand;
-		    }));
+		queue.erase(std::find_if(queue.begin(), queue.end(), [&resultCommand](const WorkPtr& work) {
+			return *work.get() == resultCommand;
+		}));
 
 		if (!server.enqueued_work.empty()) {
 			server.transmit_work(worker_identity);
 		}
 	} catch (std::out_of_range& exception) {
-		std::clog << "Invalid result from unknown (unregistered) worker: " << worker_identity << "\n";
+		std::clog << "Invalid result from unknown (unregistered) worker: '" << worker_identity << "'\n";
 	}
 }

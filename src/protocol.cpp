@@ -88,9 +88,9 @@ WorkerCommand::from_serialised_string(const std::string& serialisedString) {
 		case ProtocolCommand::Data::RESULT:
 			assert(command == "RESULT");
 			return WorkerResultCommand::from_data(data.getResult());
-		case ProtocolCommand::Data::HEATBEAT:
+		case ProtocolCommand::Data::HEARTBEAT:
 			assert(command == "HEARTBEAT");
-			return WorkerHeartbeatCommand::from_data(data.getHeatbeat());
+			return WorkerHeartbeatCommand::from_data(data.getHeartbeat());
 		case ProtocolCommand::Data::BYE:
 			assert(command == "BYE");
 			return WorkerByeCommand::from_data();
@@ -428,22 +428,23 @@ bool WorkerEqualisationResultCommand::operator==(const WorkerResultCommand& jobC
 	return this->filename == equalisationJobCommand.filename;
 }
 
-WorkerHeartbeatCommand::WorkerHeartbeatCommand(std::string peerName)
-    : WorkerCommand{ "HEARTBEAT" }, peer_name{ std::move(peerName) } {}
+WorkerHeartbeatCommand::WorkerHeartbeatCommand(HeartbeatType heartbeatType)
+    : WorkerCommand{ "HEARTBEAT" }, heartbeat_type{ heartbeatType } {}
 
 std::unique_ptr<WorkerHeartbeatCommand>
-WorkerHeartbeatCommand::from_data(const capnp::Text::Reader reader) {
-	const std::string heartbeatData{ reader };
+WorkerHeartbeatCommand::from_data(ProtocolHeartbeat::Reader reader) {
+	const HeartbeatType heartbeatType{ reader.getType() };
 
-	return std::make_unique<WorkerHeartbeatCommand>(heartbeatData);
+	return std::make_unique<WorkerHeartbeatCommand>(heartbeatType);
 }
 
 void WorkerHeartbeatCommand::command_data(ProtocolCommand::Data::Builder& dataBuilder) const {
-	dataBuilder.setHeatbeat(peer_name);
+	auto protocolHeartbeat = dataBuilder.initHeartbeat();
+	protocolHeartbeat.setType(this->heartbeat_type);
 }
 
-std::string WorkerHeartbeatCommand::get_peer_name() const {
-	return this->peer_name;
+HeartbeatType WorkerHeartbeatCommand::get_heartbeat_type() const {
+	return this->heartbeat_type;
 }
 
 void WorkerHeartbeatCommand::visit(CommandVisitor& visitor) const {

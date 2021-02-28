@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 
 #define DEBUG_SERVICE_DISCOVERY 0
 #define DEBUG_NETWORK_REQUESTS 0
@@ -16,3 +17,6 @@ const constexpr std::uint64_t MAX_CHUNK_SIZE = 64 * 1024ULL * 1024ULL;
 
 // By default, to be safe, allow up to 256 chunks
 const constexpr std::uint64_t MAX_MESSAGE_SIZE = 256 * MAX_CHUNK_SIZE;
+
+// Max interval between heartbeat request and responses before a peer is considered "dead"
+const constexpr std::chrono::seconds MAX_HEARTBEAT_INTERVAL{ 5 };

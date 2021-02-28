@@ -207,18 +207,18 @@ protected:
 
 class WorkerHeartbeatCommand : public WorkerCommand {
 public:
-	WorkerHeartbeatCommand(std::string peerName);
+	WorkerHeartbeatCommand(HeartbeatType heartbeatType);
 	~WorkerHeartbeatCommand() override = default;
 
 	void command_data(ProtocolCommand::Data::Builder& dataBuilder) const override;
 	void visit(CommandVisitor& visitor) const override;
 
-	[[nodiscard]] std::string get_peer_name() const;
+	[[nodiscard]] HeartbeatType get_heartbeat_type() const;
 
-	static std::unique_ptr<WorkerHeartbeatCommand> from_data(capnp::Text::Reader reader);
+	static std::unique_ptr<WorkerHeartbeatCommand> from_data(ProtocolHeartbeat::Reader reader);
 
 protected:
-	std::string peer_name;
+	HeartbeatType heartbeat_type;
 };
 
 class WorkerByeCommand : public WorkerCommand {

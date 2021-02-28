@@ -35,14 +35,23 @@ struct ProtocolResult {
 	}
 }
 
+enum HeartbeatType {
+	request @0;
+	reply   @1;
+}
+
+struct ProtocolHeartbeat {
+	type     @0 : HeartbeatType;
+}
+
 struct ProtocolCommand {
 	command @0 : Text;
 	data       : union {
-		helo     @1 : Void;
-		ehlo     @2 : Void;
-		heatbeat @3 : Text;
-		job      @4 : ProtocolJob;
-		result   @5 : ProtocolResult;
-		bye      @6 : Void;
+		helo      @1 : Void;
+		ehlo      @2 : Void;
+		heartbeat @3 : ProtocolHeartbeat;
+		job       @4 : ProtocolJob;
+		result    @5 : ProtocolResult;
+		bye       @6 : Void;
 	}
 }
