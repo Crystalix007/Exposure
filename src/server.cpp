@@ -99,7 +99,8 @@ void Server::transmit_work(const std::string& worker) {
 	assert(worker_queues.find(worker) != worker_queues.end());
 
 	// Only add more work if under threshold
-	while (worker_queues.at(worker).work.size() < worker_queues.at(worker).concurrency && !enqueued_work.empty()) {
+	while (worker_queues.at(worker).work.size() < worker_queues.at(worker).concurrency &&
+	       !enqueued_work.empty()) {
 		WorkPtr workItem = std::move(enqueued_work.front());
 		zmqpp::message message{};
 
@@ -382,7 +383,7 @@ void ServerEqualisationCommandVisitor::visit_equalisation_result(
 
 	std::ofstream resultOutput{ resultCommand.get_filename() + ".tiff",
 		                          std::ios_base::binary | std::ios_base::out };
-	const auto tiffData = resultCommand.get_tiff_data();
+	const auto& tiffData = resultCommand.get_tiff_data();
 
 	resultOutput.write(reinterpret_cast<const char*>(tiffData.data()), tiffData.size());
 

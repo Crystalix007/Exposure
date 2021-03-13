@@ -100,7 +100,8 @@ WorkerCommand::from_serialised_string(const std::string& serialisedString) {
 	}
 }
 
-WorkerHeloCommand::WorkerHeloCommand(std::uint32_t concurrency) : WorkerCommand{ "HELO" }, concurrency{ concurrency } {}
+WorkerHeloCommand::WorkerHeloCommand(std::uint32_t concurrency)
+    : WorkerCommand{ "HELO" }, concurrency{ concurrency } {}
 
 std::unique_ptr<WorkerHeloCommand> WorkerHeloCommand::from_data(ProtocolHelo::Reader reader) {
 	const auto concurrency{ reader.getConcurrency() };
@@ -213,9 +214,9 @@ bool WorkerHistogramJobCommand::operator==(const WorkerResultCommand& other) con
 }
 
 WorkerEqualisationJobCommand::WorkerEqualisationJobCommand(
-    std::string filename, const EqualisationHistogramMapping& histogramMapping)
+    std::string filename, EqualisationHistogramMapping histogramMapping)
     : WorkerJobCommand{ "EQUALISATION" }, filename{ std::move(filename) }, histogramMapping{
-	      histogramMapping
+	      std::move(histogramMapping)
       } {}
 
 std::unique_ptr<WorkerEqualisationJobCommand>
@@ -376,18 +377,37 @@ WorkerEqualisationResultCommand::WorkerEqualisationResultCommand(std::string fil
     : WorkerResultCommand{ "EQUALISATION" }, filename{ std::move(filename) }, tiff_data{ std::move(
 	                                                                                tiffData) } {}
 
+// This decoding step is complex by necessity. There is sufficient memory moving around here to make
+// efficiency in doing so pretty important.
 std::unique_ptr<WorkerEqualisationResultCommand>
 WorkerEqualisationResultCommand::from_data(const EqualisationResult::Reader equalisationReader) {
 	const std::string filename{ equalisationReader.getFilename() };
 	const auto& tiffDataList = equalisationReader.getTiffResult();
 	std::vector<uint8_t> tiffData{};
 
-	for (const auto& tiffDataChunk : tiffDataList) {
-		const auto& tiffDataChunkBytes = tiffDataChunk.asBytes();
-		tiffData.insert(tiffData.end(), tiffDataChunkBytes.begin(), tiffDataChunkBytes.end());
+	/* Pre-allocate in order to avoid expensive resizes. */
+	{
+		size_t totalTiffDataSize = 0;
+
+		for (const auto& tiffDataChunk : tiffDataList) {
+			totalTiffDataSize += tiffDataChunk.asBytes().size();
+		}
+
+		tiffData.resize(totalTiffDataSize);
 	}
 
-	return std::make_unique<WorkerEqualisationResultCommand>(filename, tiffData);
+	size_t cumulativeSize = 0;
+
+	for (const auto& tiffDataChunk : tiffDataList) {
+		const auto& tiffDataChunkBytes = tiffDataChunk.asBytes();
+		auto* const endElem = tiffData.data() + cumulativeSize;
+		cumulativeSize += tiffDataChunkBytes.size();
+
+		// Avoid member-by-member copying a-la std::vector::insert
+		std::memcpy(endElem, tiffDataChunkBytes.begin(), tiffDataChunkBytes.size());
+	}
+
+	return std::make_unique<WorkerEqualisationResultCommand>(filename, std::move(tiffData));
 }
 
 void WorkerEqualisationResultCommand::command_data(
@@ -409,7 +429,7 @@ std::string WorkerEqualisationResultCommand::get_filename() const {
 	return this->filename;
 }
 
-std::vector<std::uint8_t> WorkerEqualisationResultCommand::get_tiff_data() const {
+const std::vector<std::uint8_t>& WorkerEqualisationResultCommand::get_tiff_data() const {
 	return this->tiff_data;
 }
 

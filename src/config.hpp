@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 
 #define DEBUG_SERVICE_DISCOVERY 0
 #define DEBUG_NETWORK_REQUESTS 0
@@ -20,3 +20,12 @@ const constexpr std::uint64_t MAX_MESSAGE_SIZE = 256 * MAX_CHUNK_SIZE;
 
 // Max interval between heartbeat request and responses before a peer is considered "dead"
 const constexpr std::chrono::seconds MAX_HEARTBEAT_INTERVAL{ 5 };
+
+// Whether the libraries linked with already have parallelism enabled.
+// Assume no library parallelism if not defined.
+const constexpr bool LIBRARY_PARALLELISM = false;
+
+// The maximum expected hardware concurrency in threads. Used solely to define communication
+// semaphore limits. With threaded ImageMagick, this is forced to be 1, as
+// using only a single thread avoids some parallelism overhead.
+const constexpr std::uint32_t MAX_HARDWARE_CONCURRENCY = LIBRARY_PARALLELISM ? 1U : 16384U;

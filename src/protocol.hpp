@@ -21,7 +21,10 @@ namespace zmqpp {
 } // namespace zmqpp
 
 #if DEBUG_NETWORK_REQUESTS // NOLINTNEXTLINE(bugprone-macro-parentheses)
-#	define DEBUG_NETWORK(x) do { std::clog << x; } while (0)
+#	define DEBUG_NETWORK(x)                                                                         \
+		do {                                                                                           \
+			std::clog << x;                                                                              \
+		} while (0)
 #else
 #	define DEBUG_NETWORK(x)
 #endif
@@ -120,8 +123,7 @@ protected:
 
 class WorkerEqualisationJobCommand : public WorkerJobCommand {
 public:
-	WorkerEqualisationJobCommand(std::string filename,
-	                             const EqualisationHistogramMapping& histogramMapping);
+	WorkerEqualisationJobCommand(std::string filename, EqualisationHistogramMapping histogramMapping);
 
 	void command_data(ProtocolJob::Data::Builder& dataBuilder) const override;
 	void visit(CommandVisitor& visitor) const override;
@@ -198,7 +200,7 @@ public:
 	from_data(EqualisationResult::Reader equalisationReader);
 
 	[[nodiscard]] std::string get_filename() const;
-	[[nodiscard]] std::vector<std::uint8_t> get_tiff_data() const;
+	[[nodiscard]] const std::vector<std::uint8_t>& get_tiff_data() const;
 
 	bool operator==(const WorkerJobCommand& jobCommand) const override;
 	bool operator==(const WorkerResultCommand& jobCommand) const override;

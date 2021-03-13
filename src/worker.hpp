@@ -1,12 +1,13 @@
 #pragma once
 
+#include "config.hpp"
+#include "semaphore.hpp"
+
 #include <atomic>
-#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <semaphore>
 #include <string>
 #include <thread>
 #include <zmqpp/zmqpp.hpp>
@@ -71,6 +72,8 @@ public:
 	void notify_job();
 
 protected:
+	const std::uint32_t THREAD_COUNT = LIBRARY_PARALLELISM ? 1U : std::thread::hardware_concurrency();
+
 	// A single thread, capable of doing one task at a time
 	void background_task();
 
@@ -85,7 +88,10 @@ protected:
 	std::binary_semaphore finishedSemaphore;
 	std::vector<std::unique_ptr<WorkerJobCommand>> jobs;
 	std::mutex jobsMutex;
-	std::binary_semaphore jobsSemaphore;
+
+	// Can use std C++ semaphores if your implementation correctly implements semaphore wake semantics
+	// std::counting_semaphore<MAX_HARDWARE_CONCURRENCY> jobsSemaphore;
+	POSIXSemaphore jobsSemaphore;
 	std::thread backgroundThread;
 };
 

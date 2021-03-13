@@ -97,7 +97,7 @@ void ServerConnection::connect(zmqpp::context& context) {
 	std::clog << "Worker connecting to " << endpoint << "\n";
 	workSocket->connect(this->work_endpoint());
 
-	const auto heloCommand = WorkerHeloCommand{ std::thread::hardware_concurrency() };
+	const auto heloCommand = WorkerHeloCommand{ THREAD_COUNT };
 	auto heloMessage = heloCommand.to_message();
 	workSocket->send(heloMessage);
 
@@ -149,7 +149,7 @@ void ServerConnection::background_tasks() {
 
 	std::vector<std::thread> backgroundThreads{};
 
-	for (size_t i = 0; i < std::thread::hardware_concurrency(); i++) {
+	for (size_t i = 0; i < THREAD_COUNT; i++) {
 		backgroundThreads.emplace_back(&ServerConnection::background_task, this);
 	}
 
@@ -174,7 +174,7 @@ void ServerConnection::run() {
 	}
 
 	backgroundThread.join();
-	this->finishedSemaphore.release(std::thread::hardware_concurrency());
+	this->finishedSemaphore.release(THREAD_COUNT);
 }
 
 ServerConnection::State ServerConnection::state() const {
@@ -245,7 +245,7 @@ void ServerConnection::notify_job() {
 
 void ServerConnection::notify_dying() {
 	// Allow all the threads to be woken
-	this->jobsSemaphore.release(std::thread::hardware_concurrency());
+	this->jobsSemaphore.release(THREAD_COUNT);
 }
 
 Worker::Worker() = default;

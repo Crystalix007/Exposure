@@ -149,6 +149,10 @@ EqualisationHistogramMapping get_equalisation_parameters(const Histogram& previo
 	return mapping;
 }
 
+double lerp(double a, double b, double t) {
+	return a + (b - a) * t;
+}
+
 Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMapping& mapping) {
 	const double histogramBin = (static_cast<double>(value) / static_cast<double>(QuantumRange)) *
 	                            static_cast<double>(mapping.size() - 1);
@@ -174,7 +178,7 @@ Magick::Quantum linear_map(Magick::Quantum value, const EqualisationHistogramMap
 	const auto absErrorDelta = abs(errorDelta);
 
 	// Linearly interpolate between the base value and the interpolated value.
-	return static_cast<Magick::Quantum>(std::lerp(baseValue, interpolateValue, absErrorDelta));
+	return static_cast<Magick::Quantum>(lerp(baseValue, interpolateValue, absErrorDelta));
 }
 
 std::vector<std::uint8_t> image_equalise(const std::string& filename,
