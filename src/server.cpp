@@ -21,11 +21,23 @@ namespace zmqpp {
 	class context;
 } // namespace zmqpp
 
-Server::Server(zmqpp::context& context) : work_socket{ context, zmqpp::socket_type::router } {
+Server::Server(zmqpp::context& context)
+    : work_socket{ context, zmqpp::socket_type::router },
+      communication_socket{ context, zmqpp::socket_type::router }, communication_service_running{
+	      false
+      } {
 	work_socket.bind("tcp://*:" + std::to_string(WORK_PORT));
 	work_socket.set(zmqpp::socket_option::router_mandatory, true);
 	work_socket.set(zmqpp::socket_option::immediate, true);
 	work_socket.set(
+	    zmqpp::socket_option::receive_timeout,
+	    static_cast<int>(
+	        std::chrono::duration_cast<std::chrono::milliseconds>(MAX_HEARTBEAT_INTERVAL).count()));
+
+	communication_socket.bind("tcp://*:" + std::to_string(COMMUNICATION_PORT));
+	communication_socket.set(zmqpp::socket_option::router_mandatory, true);
+	communication_socket.set(zmqpp::socket_option::immediate, true);
+	communication_socket.set(
 	    zmqpp::socket_option::receive_timeout,
 	    static_cast<int>(
 	        std::chrono::duration_cast<std::chrono::milliseconds>(MAX_HEARTBEAT_INTERVAL).count()));
@@ -51,6 +63,10 @@ void Server::serve_work(const std::filesystem::path& servePath) {
 #if DEBUG_SERVICE_DISCOVERY
 	std::clog << "Serving histogram jobs for " << jobCount << " files.\n";
 #endif
+
+	this->communication_service_running = true;
+	std::future<void> communicationServiceJob =
+	    std::async(std::launch::async, &Server::run_communication_service, this);
 
 	std::future<std::map<std::string, Histogram>> receiveHistogramsWorkJob =
 	    std::async(std::launch::async, &Server::receive_histograms, this, jobCount);
@@ -89,6 +105,33 @@ void Server::serve_work(const std::filesystem::path& servePath) {
 	receiveImagesWorkJob.wait();
 
 	this->dismiss_workers();
+	this->communication_service_running = false;
+	communicationServiceJob.wait();
+}
+
+void Server::run_communication_service() {
+	while (communication_service_running) {
+		zmqpp::message message{};
+
+		while (communication_socket.receive(message)) {
+			std::string identity = message.get(0);
+
+			{
+				std::unique_lock<std::recursive_mutex> workerLock{ worker_mutex };
+
+				ServerCommunicationVisitor communicationVisitor{ *this, identity };
+
+				try {
+					std::unique_ptr<WorkerCommand> command =
+					    WorkerCommand::from_serialised_string(message.get(1));
+					command->visit(communicationVisitor);
+				} catch (const std::exception& e) {
+					std::clog << e.what() << "\n";
+					throw e;
+				}
+			}
+		}
+	}
 }
 
 void Server::transmit_work(const std::string& worker) {
@@ -106,7 +149,7 @@ void Server::transmit_work(const std::string& worker) {
 
 		workItem->add_to_message(message);
 		enqueued_work.pop();
-		send_message(worker, std::move(message));
+		send_work_message(worker, std::move(message));
 		worker_queues.at(worker).work.push_back(std::move(workItem));
 	}
 }
@@ -135,8 +178,6 @@ std::map<std::string, Histogram> Server::receive_histograms(size_t totalWorkSamp
 				}
 			}
 		}
-
-		this->send_heartbeats();
 	}
 
 	return workResults;
@@ -184,11 +225,21 @@ void Server::receive_equalised(size_t totalWorkSamples) {
 	}
 }
 
-void Server::send_message(const std::string& worker, zmqpp::message message) {
+void Server::send_work_message(const std::string& worker, zmqpp::message message) {
 	message.push_front(worker);
 
 	try {
 		work_socket.send(message);
+	} catch (const zmqpp::zmq_internal_exception& ignored) {
+		// Ignore errors sending to disconnected clients
+	}
+}
+
+void Server::send_communication_message(const std::string& worker, zmqpp::message message) {
+	message.push_front(worker);
+
+	try {
+		communication_socket.send(message);
 	} catch (const zmqpp::zmq_internal_exception& ignored) {
 		// Ignore errors sending to disconnected clients
 	}
@@ -210,7 +261,7 @@ void Server::dismiss_worker(const std::string& worker) {
 		this->worker_queues.erase(workerDataIter);
 	}
 
-	this->send_message(worker, WorkerByeCommand{}.to_message());
+	this->send_work_message(worker, WorkerByeCommand{}.to_message());
 }
 
 void Server::dismiss_workers() {
@@ -218,7 +269,7 @@ void Server::dismiss_workers() {
 	std::unique_lock<std::recursive_mutex> workerLock{ this->work_mutex };
 
 	for (const auto& [worker, _] : worker_queues) {
-		this->send_message(worker, WorkerByeCommand{}.to_message());
+		this->send_work_message(worker, WorkerByeCommand{}.to_message());
 	}
 
 	// Mark workers as dismissed in local state
@@ -239,7 +290,8 @@ void Server::send_heartbeats() {
 		} else if (workerData.heartbeat_reply_received && requestInterval > MAX_HEARTBEAT_INTERVAL) {
 			// Interval has passed since last heartbeat, so send new heartbeat
 			workerData.heartbeat_reply_received = false;
-			this->send_message(worker, WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
+			this->send_communication_message(
+			    worker, WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
 			workerData.last_heartbeat_request = std::chrono::system_clock::now();
 		}
 	}
@@ -249,72 +301,36 @@ void Server::send_heartbeats() {
 	}
 }
 
-ServerCommandVisitor::ServerCommandVisitor(Server& server, const std::string& workerIdentity)
+ServerWorkVisitor::ServerWorkVisitor(Server& server, const std::string& workerIdentity)
     : server{ server }, worker_identity{ workerIdentity } {}
 
-void ServerCommandVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
-	/* Mark connection as successful / connected. */
-	DEBUG_NETWORK("Visited Worker Helo\n");
-	WorkerData newWorkerData{};
-	newWorkerData.last_heartbeat_request = std::chrono::system_clock::now();
-	newWorkerData.concurrency = std::min(heloCommand.get_concurrency(), MAX_WORKER_QUEUE);
-	server.worker_queues.insert(std::make_pair(worker_identity, std::move(newWorkerData)));
-	server.send_message(worker_identity, WorkerEhloCommand{}.to_message());
-	server.send_message(worker_identity,
-	                    WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
-
-	server.transmit_work(worker_identity);
-}
-
-void ServerCommandVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
+void ServerWorkVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
 	/* Ignore unexpected message. */
-	DEBUG_NETWORK("Visited Worker Ehlo (unexpected)\n");
+	DEBUG_NETWORK("Visited Worker Helo (on wrong channel)\n");
 }
 
-void ServerCommandVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {
+void ServerWorkVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Ehlo (unexpected, and on wrong channel)\n");
+}
+
+void ServerWorkVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited Worker Job (unexpected)\n");
 }
 
-void ServerCommandVisitor::visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) {
+void ServerWorkVisitor::visit_equalisation_job(const WorkerEqualisationJobCommand& jobCommand) {
 	/* Ignore unexpected message. */
 	DEBUG_NETWORK("Visited Worker Job (unexpected)\n");
 }
 
-void ServerCommandVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
-	DEBUG_NETWORK("Visited Worker Heartbeat\n");
-
-	switch (heartbeatCommand.get_heartbeat_type()) {
-		case HeartbeatType::REQUEST: {
-			DEBUG_NETWORK("Received heartbeat request from worker\n");
-			const WorkerHeartbeatCommand command{
-				HeartbeatType::REPLY,
-			};
-			zmqpp::message commandMessage{ command.to_message() };
-
-			this->server.send_message(worker_identity, std::move(commandMessage));
-			break;
-		}
-		case HeartbeatType::REPLY: {
-			DEBUG_NETWORK("Received heartbeat reply from worker\n");
-			std::unique_lock<std::recursive_mutex> workerLock{ this->server.worker_mutex };
-			auto workerDataIter = this->server.worker_queues.find(worker_identity);
-
-			// Heartbeats from dismissed workers are irrelevant
-			if (workerDataIter == this->server.worker_queues.end()) {
-				DEBUG_NETWORK("Heartbeat from dismissed worker ('" << worker_identity << "')\n");
-				return;
-			}
-
-			// Update that we last received a heartbeat from this worker
-			WorkerData& workerData = workerDataIter->second;
-			workerData.heartbeat_reply_received = true;
-			break;
-		}
-	}
+void ServerWorkVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Heartbeat (on wrong channel)\n");
 }
 
-void ServerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+void ServerWorkVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+	/* Remove worker from list, and reassign outstanding work. */
 	DEBUG_NETWORK("Visited Worker Bye\n");
 
 	std::unique_lock<std::recursive_mutex> workLock{ this->server.work_mutex };
@@ -338,7 +354,7 @@ void ServerCommandVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
 ServerHistogramCommandVisitor::ServerHistogramCommandVisitor(
     Server& server, const std::string& workerIdentity,
     std::map<std::string, Histogram>& workResults)
-    : ServerCommandVisitor{ server, workerIdentity }, histogram_results{ workResults } {}
+    : ServerWorkVisitor{ server, workerIdentity }, histogram_results{ workResults } {}
 
 void ServerHistogramCommandVisitor::visit_histogram_result(
     const WorkerHistogramResultCommand& resultCommand) {
@@ -369,7 +385,7 @@ void ServerHistogramCommandVisitor::visit_equalisation_result(
 
 ServerEqualisationCommandVisitor::ServerEqualisationCommandVisitor(
     Server& server, const std::string& workerIdentity, size_t& equalisedCount)
-    : ServerCommandVisitor{ server, workerIdentity }, equalised_count{ equalisedCount } {}
+    : ServerWorkVisitor{ server, workerIdentity }, equalised_count{ equalisedCount } {}
 
 void ServerEqualisationCommandVisitor::visit_histogram_result(
     const WorkerHistogramResultCommand& resultCommand) {
@@ -401,4 +417,85 @@ void ServerEqualisationCommandVisitor::visit_equalisation_result(
 	} catch (std::out_of_range& exception) {
 		std::clog << "Invalid result from unknown (unregistered) worker: '" << worker_identity << "'\n";
 	}
+}
+
+ServerCommunicationVisitor::ServerCommunicationVisitor(Server& server,
+                                                       const std::string& workerIdentity)
+    : server{ server }, worker_identity{ workerIdentity } {}
+
+void ServerCommunicationVisitor::visit_helo(const WorkerHeloCommand& heloCommand) {
+	/* Mark connection as successful / connected. */
+	DEBUG_NETWORK("Visited Worker Helo\n");
+	WorkerData newWorkerData{};
+	newWorkerData.last_heartbeat_request = std::chrono::system_clock::now();
+	newWorkerData.concurrency = std::min(heloCommand.get_concurrency(), MAX_WORKER_QUEUE);
+	server.worker_queues.insert(std::make_pair(worker_identity, std::move(newWorkerData)));
+	server.send_communication_message(worker_identity, WorkerEhloCommand{}.to_message());
+	server.send_communication_message(worker_identity,
+	                                  WorkerHeartbeatCommand{ HeartbeatType::REQUEST }.to_message());
+
+	server.transmit_work(worker_identity);
+}
+
+void ServerCommunicationVisitor::visit_ehlo(const WorkerEhloCommand& ehloCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Ehlo (unexpected)\n");
+}
+
+void ServerCommunicationVisitor::visit_histogram_job(const WorkerHistogramJobCommand& jobCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Job (unexpected, and on wrong channel)\n");
+}
+
+void ServerCommunicationVisitor::visit_equalisation_job(
+    const WorkerEqualisationJobCommand& jobCommand) {
+	/* Ignore unexpected message. */
+	DEBUG_NETWORK("Visited Worker Job (unexpected, and on wrong channel)\n");
+}
+
+void ServerCommunicationVisitor::visit_heartbeat(const WorkerHeartbeatCommand& heartbeatCommand) {
+	DEBUG_NETWORK("Visited Worker Heartbeat\n");
+
+	switch (heartbeatCommand.get_heartbeat_type()) {
+		case HeartbeatType::REQUEST: {
+			DEBUG_NETWORK("Received heartbeat request from worker\n");
+			const WorkerHeartbeatCommand command{
+				HeartbeatType::REPLY,
+			};
+			zmqpp::message commandMessage{ command.to_message() };
+
+			this->server.send_communication_message(worker_identity, std::move(commandMessage));
+			break;
+		}
+		case HeartbeatType::REPLY: {
+			DEBUG_NETWORK("Received heartbeat reply from worker\n");
+			std::unique_lock<std::recursive_mutex> workerLock{ this->server.worker_mutex };
+			auto workerDataIter = this->server.worker_queues.find(worker_identity);
+
+			// Heartbeats from dismissed workers are irrelevant
+			if (workerDataIter == this->server.worker_queues.end()) {
+				DEBUG_NETWORK("Heartbeat from dismissed worker ('" << worker_identity << "')\n");
+				return;
+			}
+
+			// Update that we last received a heartbeat from this worker
+			WorkerData& workerData = workerDataIter->second;
+			workerData.heartbeat_reply_received = true;
+			break;
+		}
+	}
+}
+
+void ServerCommunicationVisitor::visit_bye(const WorkerByeCommand& byeCommand) {
+	DEBUG_NETWORK("Visited Worker Bye (on wrong channel)\n");
+}
+
+void ServerCommunicationVisitor::visit_equalisation_result(
+    const WorkerEqualisationResultCommand& resultCommand) {
+	DEBUG_NETWORK("Visited Worker Equalisation Result (on wrong channel)\n");
+}
+
+void ServerCommunicationVisitor::visit_histogram_result(
+    const WorkerHistogramResultCommand& resultCommand) {
+	DEBUG_NETWORK("Visited Worker Histogram Result (on wrong channel)\n");
 }

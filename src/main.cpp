@@ -25,12 +25,13 @@ int main(int argc, char* argv[]) {
 	context.set(zmqpp::context_option::ipv6, 1);
 
 	if (strcmp(argv[1], "--client") == 0) {
+		bool persist = (argc >= 2) && (strcmp(argv[2], "--persist") == 0);
 		std::clog << "Running as client only\n";
 		Magick::InitializeMagick(*argv);
 		Worker worker{};
 		mdns_find_server(worker);
 
-		worker.run_jobs(std::move(context));
+		worker.run_jobs(std::move(context), persist);
 		return 0;
 	}
 

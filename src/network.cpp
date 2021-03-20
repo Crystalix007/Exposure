@@ -11,6 +11,7 @@
 #include <avahi-common/simple-watch.h>
 #include <avahi-common/strlst.h>
 #include <cassert>
+#include <charconv>
 #include <cstdint>
 #include <cxxabi.h>
 #include <iostream>
@@ -30,6 +31,10 @@ struct MdnsContext {
 	Worker& worker;
 };
 
+struct PortConfiguration {
+	std::uint16_t workPort, communicationPort;
+};
+
 // Server-related functions
 void create_avahi_services(AvahiClient* c);
 void avahi_server_callback(AvahiClient* c, AvahiClientState state, void* userdata);
@@ -47,6 +52,11 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex /*inter
                                    const char* hostName, const AvahiAddress* address, uint16_t port,
                                    AvahiStringList* txt, AvahiLookupResultFlags flags,
                                    void* userdata);
+
+// DNS-SD txt encoding/decoding
+
+AvahiStringList* encode_dnssd_txt(PortConfiguration portConfiguration);
+PortConfiguration decode_dnssd_txt(AvahiStringList* txtRecord);
 
 static char serviceName[] = "_image_histogram._tcp";
 
@@ -132,14 +142,17 @@ void create_avahi_services(AvahiClient* c) {
 	int error = 0;
 
 	if (avahi_entry_group_is_empty(group) != 0) {
-		if ((error = avahi_entry_group_add_service(group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
-		                                           AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name,
-		                                           serviceName, nullptr, nullptr, WORK_PORT,
-		                                           nullptr)) != 0) {
+		auto* const encodedTxtRecord = encode_dnssd_txt({ WORK_PORT, COMMUNICATION_PORT });
+		if ((error = avahi_entry_group_add_service_strlst(
+		         group, AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC,
+		         AvahiPublishFlags::AVAHI_PUBLISH_USE_MULTICAST, name, serviceName, nullptr, nullptr,
+		         WORK_PORT, encodedTxtRecord)) != 0) {
+			avahi_string_list_free(encodedTxtRecord);
 			std::cerr << "Failed to register Avahi service with entry group: " << avahi_strerror(error)
 			          << "\n";
 			return;
 		}
+		avahi_string_list_free(encodedTxtRecord);
 
 		if ((error = avahi_entry_group_commit(group)) < 0) {
 			std::cerr << "Failed to commit entry group: " << avahi_strerror(error) << "\n";
@@ -210,7 +223,7 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 			char* t;
 #if DEBUG_SERVICE_DISCOVERY
 			std::clog << "Service '" << name << "' of type '" << type << "' in domain '" << domain
-			          << " on IP version " << ip_version << "': "
+			          << " on IP version " << ipVersion << "': "
 			          << "\n";
 #endif
 			avahi_address_snprint(a, sizeof(a), address);
@@ -225,19 +238,22 @@ void avahi_client_resolve_callback(AvahiServiceResolver* r, AvahiIfIndex interfa
 			        "\twide_area: %i\n"
 			        "\tmulticast: %i\n"
 			        "\tcached: %i\n",
-			        host_name, port, a, t, avahi_string_list_get_service_cookie(txt),
+			        hostName, port, a, t, avahi_string_list_get_service_cookie(txt),
 			        !!(flags & AVAHI_LOOKUP_RESULT_LOCAL), !!(flags & AVAHI_LOOKUP_RESULT_OUR_OWN),
 			        !!(flags & AVAHI_LOOKUP_RESULT_WIDE_AREA), !!(flags & AVAHI_LOOKUP_RESULT_MULTICAST),
 			        !!(flags & AVAHI_LOOKUP_RESULT_CACHED));
 #endif
+			const auto portConfiguration = decode_dnssd_txt(txt);
 			avahi_free(t);
 
 			if (ipVersion == AVAHI_PROTO_INET6 &&
 			    (IN6_IS_ADDR_LINKLOCAL(address->data.data) || IN6_IS_ADDR_LOOPBACK(address->data.data))) {
 				// Specify interface if needing to connect to a remote on a link-local IPv6 address
-				context->worker.add_server(name, a + "%"s + std::to_string(interface), port);
+				context->worker.add_server(name, a + "%"s + std::to_string(interface),
+				                           portConfiguration.workPort, portConfiguration.communicationPort);
 			} else {
-				context->worker.add_server(name, a, port);
+				context->worker.add_server(name, a, portConfiguration.workPort,
+				                           portConfiguration.communicationPort);
 			}
 			avahi_simple_poll_quit(simplePoll);
 		}
@@ -286,9 +302,9 @@ void avahi_client_browse_callback(AvahiServiceBrowser* b, AvahiIfIndex interface
 		case AVAHI_BROWSER_ALL_FOR_NOW:
 		case AVAHI_BROWSER_CACHE_EXHAUSTED:
 #if DEBUG_SERVICE_DISCOVERY
-			const auto event_description =
+			const auto* const eventDescription =
 			    ((event == AVAHI_BROWSER_CACHE_EXHAUSTED) ? "CACHE_EXHAUSTED" : "ALL_FOR_NOW");
-			std::clog << "(Browser) " << event_description << "\n";
+			std::clog << "(Browser) " << eventDescription << "\n";
 #endif
 			break;
 	}
@@ -339,4 +355,55 @@ void mdns_find_server(Worker& worker) {
 	}
 
 	avahi_free(name);
+}
+
+AvahiStringList* encode_dnssd_txt(PortConfiguration portConfiguration) {
+	AvahiStringList* txtList = nullptr;
+
+	const auto workPortStr = std::to_string(portConfiguration.workPort);
+	const auto communicationPortStr = std::to_string(portConfiguration.communicationPort);
+
+	txtList = avahi_string_list_add_pair(txtList, "work-port", workPortStr.c_str());
+	txtList = avahi_string_list_add_pair(txtList, "communication-port", communicationPortStr.c_str());
+
+	return txtList;
+}
+
+PortConfiguration decode_dnssd_txt(AvahiStringList* txtRecord) {
+	PortConfiguration portConfiguration{};
+
+	AvahiStringList* const workPortStringList = avahi_string_list_find(txtRecord, "work-port");
+	char* key;
+
+	if (workPortStringList != nullptr) {
+		char* workPortCharString;
+		size_t workPortCharStringSize;
+		avahi_string_list_get_pair(workPortStringList, &key, &workPortCharString,
+		                           &workPortCharStringSize);
+		avahi_free(key);
+		std::from_chars(workPortCharString, workPortCharString + workPortCharStringSize,
+		                portConfiguration.workPort);
+		avahi_free(workPortCharString);
+	} else {
+		throw std::runtime_error{ "DNS-SD TXT record doesn't contain work port." };
+	}
+
+	AvahiStringList* const communicationPortStringList =
+	    avahi_string_list_find(txtRecord, "communication-port");
+
+	if (communicationPortStringList != nullptr) {
+		char* communicationPortCharString;
+		size_t communicationPortCharStringSize;
+		avahi_string_list_get_pair(communicationPortStringList, &key, &communicationPortCharString,
+		                           &communicationPortCharStringSize);
+		avahi_free(key);
+		std::from_chars(communicationPortCharString,
+		                communicationPortCharString + communicationPortCharStringSize,
+		                portConfiguration.communicationPort);
+		avahi_free(communicationPortCharString);
+	} else {
+		throw std::runtime_error{ "DNS-SD TXT record doesn't contain communication port." };
+	}
+
+	return portConfiguration;
 }

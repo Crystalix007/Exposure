@@ -1,8 +1,10 @@
 #include "worker.hpp"
 
 #include <cassert>
+#include <climits>
 #include <mutex>
 #include <ostream>
+#include <random>
 #include <utility>
 #include <zmqpp/context.hpp>
 #include <zmqpp/socket.hpp>
@@ -52,11 +54,14 @@ protected:
 	ServerConnection& connection;
 };
 
-ServerDetails::ServerDetails(std::string name, std::string address, std::uint16_t port)
-    : name{ std::move(name) }, address{ std::move(address) }, port{ port } {}
+ServerDetails::ServerDetails(std::string name, std::string address, std::uint16_t workPort,
+                             std::uint16_t communicationPort)
+    : name{ std::move(name) }, address{ std::move(address) }, workPort{ workPort },
+      communicationPort{ communicationPort } {}
 
 bool ServerDetails::operator==(const ServerDetails& other) const noexcept {
-	return this->name == other.name && this->address == other.address && this->port == other.port;
+	return this->name == other.name && this->address == other.address &&
+	       this->workPort == other.workPort;
 }
 
 bool ServerDetails::operator<(const ServerDetails& other) const noexcept {
@@ -64,22 +69,22 @@ bool ServerDetails::operator<(const ServerDetails& other) const noexcept {
 }
 
 ServerConnection::ServerConnection(const std::string& name, const std::string& address,
-                                   const uint16_t port)
-    : serverDetails{ name, address, port }, workSocket{},
-      currentState{ ServerConnection::State::Unconnected }, finishedSemaphore{ 0 }, jobsSemaphore{
-	      0
-      } {
+                                   const uint16_t workPort, std::uint16_t communicationPort)
+    : serverDetails{ name, address, workPort, communicationPort }, workSocket{},
+      communicationSocket{}, currentState{ ServerConnection::State::Unconnected },
+      finishedSemaphore{ 0 }, jobsSemaphore{ 0 } {
 	assert(address.length() == 4 || address.length() == 16);
 }
 
 ServerConnection::ServerConnection(ServerDetails serverDetails)
-    : serverDetails{ std::move(serverDetails) }, workSocket{},
+    : serverDetails{ std::move(serverDetails) }, workSocket{}, communicationSocket{},
       currentState{ ServerConnection::State::Unconnected }, finishedSemaphore{ 0 }, jobsSemaphore{
 	      0
       } {}
 
 ServerConnection::ServerConnection(ServerConnection&& other) noexcept
     : serverDetails{ std::move(other.serverDetails) }, workSocket{ std::move(other.workSocket) },
+      communicationSocket{ std::move(other.communicationSocket) },
       currentState{ other.currentState }, finishedSemaphore{ 0 }, jobsSemaphore{ 0 } {}
 
 ServerConnection::~ServerConnection() {
@@ -92,18 +97,28 @@ void ServerConnection::connect(zmqpp::context& context) {
 
 	ConnectingWorkerCommandVisitor visitor{ *this };
 	workSocket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
+	communicationSocket = std::make_unique<zmqpp::socket>(context, zmqpp::socket_type::dealer);
 
-	const auto& endpoint = this->work_endpoint();
-	std::clog << "Worker connecting to " << endpoint << "\n";
-	workSocket->connect(this->work_endpoint());
+	// Choose consistent identity across both connections
+	const std::string id = ServerConnection::generate_random_id();
+	workSocket->set(zmqpp::socket_option::identity, id);
+	communicationSocket->set(zmqpp::socket_option::identity, id);
+
+	const auto& workEndpoint = this->work_endpoint();
+	workSocket->connect(workEndpoint);
+
+	const auto& communicationEndpoint = this->communication_endpoint();
+	communicationSocket->connect(communicationEndpoint);
 
 	const auto heloCommand = WorkerHeloCommand{ THREAD_COUNT };
 	auto heloMessage = heloCommand.to_message();
-	workSocket->send(heloMessage);
+	communicationSocket->send(heloMessage);
 
 	std::string returnMessage{};
-	workSocket->receive(returnMessage);
+	communicationSocket->receive(returnMessage);
 	const auto command = WorkerCommand::from_serialised_string(returnMessage);
+
+	// Visit (expected) Ehlo command.
 	command->visit(visitor);
 
 	assert(this->currentState == ServerConnection::State::Connected);
@@ -117,6 +132,8 @@ void ServerConnection::disconnect() {
 		finishedSemaphore.acquire();
 		workSocket->disconnect(this->work_endpoint());
 		workSocket.reset();
+		communicationSocket->disconnect(this->communication_endpoint());
+		communicationSocket.reset();
 	}
 }
 
@@ -129,7 +146,7 @@ bool ServerConnection::operator==(const ServerDetails& other) const noexcept {
 }
 
 bool ServerConnection::connected() const {
-	return static_cast<bool>(workSocket);
+	return static_cast<bool>(workSocket) && static_cast<bool>(communicationSocket);
 }
 
 void ServerConnection::background_task() {
@@ -162,19 +179,34 @@ void ServerConnection::run() {
 	assert(this->currentState != ServerConnection::State::Unconnected);
 	assert(this->workSocket);
 
-	backgroundThread = std::thread{ &ServerConnection::background_tasks, this };
+	std::thread backgroundThread = std::thread{ &ServerConnection::background_tasks, this };
+	std::thread communicationThread = std::thread{ &ServerConnection::run_communication, this };
 
+	run_work();
+
+	backgroundThread.join();
+	this->finishedSemaphore.release(THREAD_COUNT);
+	communicationThread.join();
+}
+
+void ServerConnection::run_work() {
 	while (this->state() != ServerConnection::State::Dying) {
 		std::string message;
 		workSocket->receive(message);
 
 		CommunicatingWorkerCommandVisitor commandVisitor{ *this };
-
 		WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
 	}
+}
 
-	backgroundThread.join();
-	this->finishedSemaphore.release(THREAD_COUNT);
+void ServerConnection::run_communication() {
+	while (this->state() != ServerConnection::State::Dying) {
+		std::string message;
+		communicationSocket->receive(message);
+
+		CommunicatingWorkerCommandVisitor commandVisitor{ *this };
+		WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
+	}
 }
 
 ServerConnection::State ServerConnection::state() const {
@@ -221,14 +253,27 @@ ServerConnection::State ServerConnection::transition_state(ServerConnection::Sta
 zmqpp::endpoint_t ServerConnection::work_endpoint() const {
 	assert(this->connected());
 
-	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.port);
+	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.workPort);
 }
 
-void ServerConnection::send_message(zmqpp::message message) const {
+zmqpp::endpoint_t ServerConnection::communication_endpoint() const {
+	assert(this->connected());
+
+	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.communicationPort);
+}
+
+void ServerConnection::send_work_message(zmqpp::message message) const {
 	assert(this->connected());
 
 	std::unique_lock<std::mutex> workSocketLock{ this->workSocketMutex };
 	this->workSocket->send(message);
+}
+
+void ServerConnection::send_communication_message(zmqpp::message message) const {
+	assert(this->connected());
+
+	std::unique_lock<std::mutex> communicationSocketLock{ this->communicationSocketMutex };
+	this->communicationSocket->send(message);
 }
 
 void ServerConnection::schedule_job(std::unique_ptr<WorkerJobCommand> job) {
@@ -248,23 +293,41 @@ void ServerConnection::notify_dying() {
 	this->jobsSemaphore.release(THREAD_COUNT);
 }
 
-Worker::Worker() = default;
+std::string ServerConnection::generate_random_id() {
+	std::random_device rd{};
+	std::mt19937_64 re{ rd() };
 
-void Worker::add_server(const std::string& name, const std::string& address, const uint16_t port) {
+	// Generate all ASCII except for null-characters
+	std::uniform_int_distribution<char> asciiDistribution{ 1, std::numeric_limits<char>::max() };
+
+	std::string randomId{};
+
+	for (std::uint16_t i = 0; i < WORKER_ID_LETTER_COUNT; i++) {
+		randomId += asciiDistribution(re);
+	}
+
+	return randomId;
+}
+
+Worker::Worker() : connectionSemaphore{ 0 } {};
+
+void Worker::add_server(const std::string& name, const std::string& address,
+                        const std::uint16_t workPort, const std::uint16_t communicationPort) {
 	assert(!name.empty());
 
 	std::lock_guard<std::recursive_mutex> connectionsLock{ connectionsMutex };
-	ServerDetails details{ name, address, port };
+	ServerDetails details{ name, address, workPort, communicationPort };
 	ServerConnection connection{ details };
 
 	connections.insert(std::pair<ServerDetails, ServerConnection>(details, std::move(connection)));
+	connectionSemaphore.release();
 }
 
 void Worker::remove_server(const std::string& name, const std::string& address,
-                           const uint16_t port) {
+                           const std::uint16_t workPort, const std::uint16_t communicationPort) {
 	assert(!connections.empty());
 
-	const ServerDetails details{ name, address, port };
+	const ServerDetails details{ name, address, workPort, communicationPort };
 	std::lock_guard<std::recursive_mutex> connectionsLock{ this->connectionsMutex };
 	auto connection = this->connections.find(details);
 
@@ -276,24 +339,23 @@ bool Worker::has_jobs() const {
 	return !connections.empty();
 }
 
-std::optional<ServerConnection> Worker::pop_connection() {
+ServerConnection Worker::pop_connection() {
+	connectionSemaphore.acquire();
+
 	std::unique_lock lock{ this->connectionsMutex };
 
-	if (this->has_jobs()) {
-		auto connectionIter = connections.begin();
-		ServerConnection connection = std::move(connectionIter->second);
-		connections.erase(connectionIter);
-		return std::move(connection);
-	}
-
-	return std::nullopt;
+	auto connectionIter = connections.begin();
+	ServerConnection connection = std::move(connectionIter->second);
+	connections.erase(connectionIter);
+	return connection;
 }
 
-void Worker::run_jobs(zmqpp::context context) {
-	while (auto connection = this->pop_connection()) {
-		connection->connect(context);
-		connection->run();
-	}
+void Worker::run_jobs(zmqpp::context context, bool persist) {
+	do {
+		auto connection = this->pop_connection();
+		connection.connect(context);
+		connection.run();
+	} while (persist);
 }
 
 ConnectingWorkerCommandVisitor::ConnectingWorkerCommandVisitor(ServerConnection& connection)
@@ -362,7 +424,7 @@ void CommunicatingWorkerCommandVisitor::visit_heartbeat(
 			};
 			zmqpp::message commandMessage{ command.to_message() };
 
-			this->connection.send_message(std::move(commandMessage));
+			this->connection.send_communication_message(std::move(commandMessage));
 			break;
 		}
 		case HeartbeatType::REPLY: {
@@ -392,7 +454,7 @@ void RunningWorkerCommandVisitor::visit_histogram_job(const WorkerHistogramJobCo
 		WorkerHistogramResultCommand{ jobCommand.get_filename(), *histogram }.to_message()
 	};
 
-	this->connection.send_message(std::move(response));
+	this->connection.send_work_message(std::move(response));
 }
 
 void RunningWorkerCommandVisitor::visit_equalisation_job(
@@ -406,5 +468,5 @@ void RunningWorkerCommandVisitor::visit_equalisation_job(
 		WorkerEqualisationResultCommand{ jobCommand.get_filename(), tiffFile }.to_message()
 	};
 
-	this->connection.send_message(std::move(response));
+	this->connection.send_work_message(std::move(response));
 }

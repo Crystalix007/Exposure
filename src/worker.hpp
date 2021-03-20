@@ -23,9 +23,10 @@ namespace zmqpp {
 struct ServerDetails {
 	std::string name;
 	std::string address;
-	std::uint16_t port;
+	std::uint16_t workPort, communicationPort;
 
-	ServerDetails(std::string name, std::string address, std::uint16_t port);
+	ServerDetails(std::string name, std::string address, std::uint16_t workPort,
+	              std::uint16_t communicationPort);
 	ServerDetails(const ServerDetails& other) noexcept = default;
 	ServerDetails(ServerDetails&& other) noexcept = default;
 	bool operator==(const ServerDetails& other) const noexcept;
@@ -42,7 +43,8 @@ public:
 		Dying,
 	};
 
-	ServerConnection(const std::string& name, const std::string& address, uint16_t port);
+	ServerConnection(const std::string& name, const std::string& address, uint16_t workPort,
+	                 uint16_t communicationPort);
 	ServerConnection(ServerConnection&& other) noexcept;
 	explicit ServerConnection(ServerDetails serverDetails);
 
@@ -56,8 +58,11 @@ public:
 	bool connected() const;
 
 	void run();
+	void run_work();
+	void run_communication();
 
 	zmqpp::endpoint_t work_endpoint() const;
+	zmqpp::endpoint_t communication_endpoint() const;
 
 	ServerConnection::State state() const;
 	std::optional<std::unique_ptr<WorkerJobCommand>> pop_job();
@@ -66,10 +71,13 @@ public:
 	static ServerConnection::State transition_state(ServerConnection::State currentState,
 	                                                ServerConnection::State nextState);
 
-	void send_message(zmqpp::message message) const;
+	void send_work_message(zmqpp::message message) const;
+	void send_communication_message(zmqpp::message message) const;
 	void schedule_job(std::unique_ptr<WorkerJobCommand> job);
 	void notify_dying();
 	void notify_job();
+
+	static std::string generate_random_id();
 
 protected:
 	const std::uint32_t THREAD_COUNT = LIBRARY_PARALLELISM ? 1U : std::thread::hardware_concurrency();
@@ -83,6 +91,8 @@ protected:
 	ServerDetails serverDetails;
 	std::unique_ptr<zmqpp::socket> workSocket;
 	mutable std::mutex workSocketMutex;
+	std::unique_ptr<zmqpp::socket> communicationSocket;
+	mutable std::mutex communicationSocketMutex;
 	ServerConnection::State currentState;
 	mutable std::mutex currentStateMutex;
 	std::binary_semaphore finishedSemaphore;
@@ -92,21 +102,23 @@ protected:
 	// Can use std C++ semaphores if your implementation correctly implements semaphore wake semantics
 	// std::counting_semaphore<MAX_HARDWARE_CONCURRENCY> jobsSemaphore;
 	POSIXSemaphore jobsSemaphore;
-	std::thread backgroundThread;
 };
 
 class Worker {
 public:
 	Worker();
 
-	void add_server(const std::string& name, const std::string& address, uint16_t port);
-	void remove_server(const std::string& name, const std::string& address, uint16_t port);
-	void run_jobs(zmqpp::context context);
+	void add_server(const std::string& name, const std::string& address, uint16_t workPort,
+	                std::uint16_t communicationPort);
+	void remove_server(const std::string& name, const std::string& address, uint16_t workPort,
+	                   std::uint16_t communicationPort);
+	void run_jobs(zmqpp::context context, bool persist = false);
 
 	bool has_jobs() const;
-	std::optional<ServerConnection> pop_connection();
+	ServerConnection pop_connection();
 
 protected:
 	std::map<ServerDetails, ServerConnection> connections;
 	mutable std::recursive_mutex connectionsMutex;
+	POSIXSemaphore connectionSemaphore;
 };
