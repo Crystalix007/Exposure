@@ -110,15 +110,15 @@ public:
 
 	void add_server(const std::string& name, const std::string& address, uint16_t workPort,
 	                std::uint16_t communicationPort);
-	void remove_server(const std::string& name, const std::string& address, uint16_t workPort,
-	                   std::uint16_t communicationPort);
+	void remove_server(const std::string& name);
 	void run_jobs(zmqpp::context context, bool persist = false);
 
 	bool has_jobs() const;
-	ServerConnection pop_connection();
+	ServerConnection next_connection() const;
+	void pop_connection();
 
 protected:
-	std::map<ServerDetails, ServerConnection> connections;
-	mutable std::recursive_mutex connectionsMutex;
-	POSIXSemaphore connectionSemaphore;
+	std::map<std::string, ServerDetails> serverDetails;
+	mutable std::recursive_mutex serverDetailsMutex;
+	mutable POSIXSemaphore connectionSemaphore;
 };

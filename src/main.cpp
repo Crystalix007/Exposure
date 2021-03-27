@@ -1,5 +1,6 @@
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <iostream>
 #include <string>
 #include <utility>
@@ -29,8 +30,9 @@ int main(int argc, char* argv[]) {
 		std::clog << "Running as client only\n";
 		Magick::InitializeMagick(*argv);
 		Worker worker{};
-		mdns_find_server(worker);
 
+		std::future<void> mdnsBackgroundThread =
+		    std::async(std::launch::async, [&worker, persist]() { mdns_find_server(worker, persist); });
 		worker.run_jobs(std::move(context), persist);
 		return 0;
 	}

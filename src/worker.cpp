@@ -104,6 +104,11 @@ void ServerConnection::connect(zmqpp::context& context) {
 	workSocket->set(zmqpp::socket_option::identity, id);
 	communicationSocket->set(zmqpp::socket_option::identity, id);
 
+	communicationSocket->set(
+	    zmqpp::socket_option::receive_timeout,
+	    static_cast<int>(
+	        std::chrono::duration_cast<std::chrono::milliseconds>(MAX_HEARTBEAT_INTERVAL).count()));
+
 	const auto& workEndpoint = this->work_endpoint();
 	workSocket->connect(workEndpoint);
 
@@ -202,10 +207,11 @@ void ServerConnection::run_work() {
 void ServerConnection::run_communication() {
 	while (this->state() != ServerConnection::State::Dying) {
 		std::string message;
-		communicationSocket->receive(message);
 
-		CommunicatingWorkerCommandVisitor commandVisitor{ *this };
-		WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
+		if (communicationSocket->receive(message)) {
+			CommunicatingWorkerCommandVisitor commandVisitor{ *this };
+			WorkerCommand::from_serialised_string(message)->visit(commandVisitor);
+		}
 	}
 }
 
@@ -251,14 +257,10 @@ ServerConnection::State ServerConnection::transition_state(ServerConnection::Sta
 }
 
 zmqpp::endpoint_t ServerConnection::work_endpoint() const {
-	assert(this->connected());
-
 	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.workPort);
 }
 
 zmqpp::endpoint_t ServerConnection::communication_endpoint() const {
-	assert(this->connected());
-
 	return "tcp://" + serverDetails.address + ":" + std::to_string(serverDetails.communicationPort);
 }
 
@@ -315,46 +317,59 @@ void Worker::add_server(const std::string& name, const std::string& address,
                         const std::uint16_t workPort, const std::uint16_t communicationPort) {
 	assert(!name.empty());
 
-	std::lock_guard<std::recursive_mutex> connectionsLock{ connectionsMutex };
-	ServerDetails details{ name, address, workPort, communicationPort };
-	ServerConnection connection{ details };
+	std::lock_guard<std::recursive_mutex> connectionsLock{ serverDetailsMutex };
 
-	connections.insert(std::pair<ServerDetails, ServerConnection>(details, std::move(connection)));
+	if (serverDetails.find(name) != serverDetails.end()) {
+		// We already have an entry for this server, so drop this instance.
+		return;
+	}
+
+	ServerDetails details{ name, address, workPort, communicationPort };
+
+	serverDetails.insert(std::pair<std::string, ServerDetails>(name, details));
 	connectionSemaphore.release();
 }
 
-void Worker::remove_server(const std::string& name, const std::string& address,
-                           const std::uint16_t workPort, const std::uint16_t communicationPort) {
-	assert(!connections.empty());
+void Worker::remove_server(const std::string& name) {
+	std::lock_guard<std::recursive_mutex> serverDetailsLock{ this->serverDetailsMutex };
 
-	const ServerDetails details{ name, address, workPort, communicationPort };
-	std::lock_guard<std::recursive_mutex> connectionsLock{ this->connectionsMutex };
-	auto connection = this->connections.find(details);
+	assert(!serverDetails.empty());
 
-	connections.erase(connection);
+	auto connection = this->serverDetails.find(name);
+
+	serverDetails.erase(connection);
 }
 
 bool Worker::has_jobs() const {
-	std::unique_lock<std::recursive_mutex> lock{ this->connectionsMutex };
-	return !connections.empty();
+	std::unique_lock<std::recursive_mutex> lock{ this->serverDetailsMutex };
+	return !serverDetails.empty();
 }
 
-ServerConnection Worker::pop_connection() {
+ServerConnection Worker::next_connection() const {
 	connectionSemaphore.acquire();
 
-	std::unique_lock lock{ this->connectionsMutex };
+	std::unique_lock lock{ this->serverDetailsMutex };
+	assert(!this->serverDetails.empty());
 
-	auto connectionIter = connections.begin();
-	ServerConnection connection = std::move(connectionIter->second);
-	connections.erase(connectionIter);
+	auto connectionIter = serverDetails.begin();
+	ServerConnection connection{ connectionIter->second };
 	return connection;
+}
+
+void Worker::pop_connection() {
+	std::unique_lock lock{ this->serverDetailsMutex };
+	assert(!this->serverDetails.empty());
+
+	auto connectionIter = serverDetails.begin();
+	this->serverDetails.erase(connectionIter);
 }
 
 void Worker::run_jobs(zmqpp::context context, bool persist) {
 	do {
-		auto connection = this->pop_connection();
+		auto connection = this->next_connection();
 		connection.connect(context);
 		connection.run();
+		this->pop_connection();
 	} while (persist);
 }
 
